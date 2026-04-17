@@ -1,29 +1,26 @@
 // GCP Secret Manager credential provider
 //
-// Stores QBO OAuth credentials (client_id, client_secret, access_token,
-// refresh_token, company_id) as a JSON blob in a single Secret Manager secret.
-// Every token refresh writes a new secret version. Old versions age out via
-// Secret Manager lifecycle policy (configured at deploy time, not here).
+// Stores QBO OAuth credentials as a JSON blob in a single Secret Manager
+// secret. Every token refresh writes a new secret version. Old versions age
+// out via lifecycle policy (configured at deploy time, not here).
 //
 // Env vars:
 //   GCP_PROJECT_ID           — project hosting the secret (required)
 //   QBO_SECRET_NAME          — secret name (default: "qbo-credentials")
 //   GOOGLE_APPLICATION_CREDENTIALS — path to SA key JSON (not needed on Cloud Run)
-//
-// On Cloud Run the default service account credentials are used automatically.
 
 import { SecretManagerServiceClient } from "@google-cloud/secret-manager";
 import type { CredentialProvider, QBCredentials } from "./types.js";
+import { mergeEnvOverrides } from "./types.js";
 
 const PROJECT_ID = process.env.GCP_PROJECT_ID || "";
 const SECRET_NAME = process.env.QBO_SECRET_NAME || "qbo-credentials";
 
-/**
- * GCP-backed credential provider.
- * One secret holds the entire QBCredentials JSON. Each refresh adds a new version.
- */
 export class GCPCredentialProvider implements CredentialProvider {
   private client: SecretManagerServiceClient;
+  // Process-local cache. A peer replica's rotation is picked up when this
+  // container's tokens 401 and the caller re-runs getCredentials; there is no
+  // cross-replica invalidation by design.
   private cachedCredentials: QBCredentials | null = null;
 
   constructor() {
@@ -44,8 +41,6 @@ export class GCPCredentialProvider implements CredentialProvider {
   }
 
   async getCredentials(): Promise<QBCredentials> {
-    // Always refetch — we can't know from inside the container whether another
-    // replica has rotated the token. Cache invalidates on saveCredentials.
     if (this.cachedCredentials) {
       return this.cachedCredentials;
     }
@@ -61,36 +56,21 @@ export class GCPCredentialProvider implements CredentialProvider {
       );
     }
 
-    const stored = JSON.parse(payload) as QBCredentials;
-
-    // Env vars can override client_id/secret (useful for rotation without
-    // rewriting the secret); tokens always come from the secret.
-    const credentials: QBCredentials = {
-      client_id: process.env.QBO_CLIENT_ID || stored.client_id,
-      client_secret: process.env.QBO_CLIENT_SECRET || stored.client_secret,
-      redirect_url:
-        stored.redirect_url ||
-        "https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl",
-      access_token: stored.access_token,
-      refresh_token: stored.refresh_token,
-      company_id: stored.company_id,
-    };
-
+    const credentials = mergeEnvOverrides(JSON.parse(payload));
     this.cachedCredentials = credentials;
     return credentials;
   }
 
   async saveCredentials(credentials: QBCredentials): Promise<void> {
-    // Add a new secret version with the updated token pair.
     await this.client.addSecretVersion({
       parent: this.secretPath,
       payload: {
         data: Buffer.from(JSON.stringify(credentials), "utf-8"),
       },
     });
-
-    // Invalidate local cache so the next read sees the new version.
-    this.cachedCredentials = null;
+    // We just wrote this payload — this replica's cache is authoritative until
+    // we ourselves rotate again.
+    this.cachedCredentials = credentials;
   }
 
   async getCompanyId(): Promise<string> {
@@ -105,14 +85,8 @@ export class GCPCredentialProvider implements CredentialProvider {
 
   async isConfigured(): Promise<boolean> {
     try {
-      const credentials = await this.getCredentials();
-      return !!(
-        credentials.client_id &&
-        credentials.client_secret &&
-        credentials.access_token &&
-        credentials.refresh_token &&
-        credentials.company_id
-      );
+      const c = await this.getCredentials();
+      return !!(c.client_id && c.client_secret && c.access_token && c.refresh_token && c.company_id);
     } catch {
       return false;
     }

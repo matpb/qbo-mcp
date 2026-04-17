@@ -53,3 +53,23 @@ export function getCredentialMode(): CredentialMode {
   if (mode === "gcp") return "gcp";
   return "local";
 }
+
+export const DEFAULT_REDIRECT_URL =
+  "https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl";
+
+/**
+ * Merge stored credentials with env-var overrides. QBO_CLIENT_ID and
+ * QBO_CLIENT_SECRET take precedence over stored values — useful during an
+ * Intuit client-secret rotation when the new secret hasn't been pushed to
+ * storage yet. Tokens always come from storage.
+ */
+export function mergeEnvOverrides(stored: Partial<QBCredentials>): QBCredentials {
+  return {
+    client_id: process.env.QBO_CLIENT_ID || stored.client_id || "",
+    client_secret: process.env.QBO_CLIENT_SECRET || stored.client_secret || "",
+    redirect_url: stored.redirect_url || DEFAULT_REDIRECT_URL,
+    access_token: stored.access_token || "",
+    refresh_token: stored.refresh_token || "",
+    company_id: stored.company_id,
+  };
+}

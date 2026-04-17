@@ -7,27 +7,17 @@
 #
 # Usage:
 #   export GCP_PROJECT=your-gcp-project-id
-#   export REGION=us-central1                    # optional
-#   export SERVICE=qbo-mcp                       # optional
 #   ./deploy/deploy.sh
 
-set -euo pipefail
+source "$(dirname "$0")/common.sh"
 
-: "${GCP_PROJECT:?GCP_PROJECT env var is required (e.g. export GCP_PROJECT=your-project-id)}"
-
-REGION="${REGION:-us-central1}"
-SERVICE="${SERVICE:-qbo-mcp}"
-SECRET_NAME="${SECRET_NAME:-qbo-credentials}"
-SA_NAME="${SA_NAME:-qbo-mcp-runtime}"
-SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-${SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com}"
-REPO="${REPO:-qbo-mcp}"
 IMAGE="${REGION}-docker.pkg.dev/${GCP_PROJECT}/${REPO}/${SERVICE}:$(date -u +%Y%m%d-%H%M%S)"
 
 echo "Project:    $GCP_PROJECT"
 echo "Region:     $REGION"
 echo "Service:    $SERVICE"
 echo "Image:      $IMAGE"
-echo "SA:         $SERVICE_ACCOUNT"
+echo "SA:         $SA_EMAIL"
 echo
 
 # 1. Ensure Artifact Registry repo exists
@@ -49,16 +39,25 @@ gcloud builds submit \
   --timeout=600s \
   .
 
-# 3. Deploy to Cloud Run
+# 3. Deploy to Cloud Run.
+#
 #    --no-allow-unauthenticated: only callers with roles/run.invoker can hit it.
 #    Secret Manager reads happen via the runtime SA using the Secret Manager
 #    client library — no env-var injection, so rotation doesn't need a redeploy.
+#
+#    --update-env-vars (not --set-env-vars): only modifies the listed keys.
+#    That way manually-set values (e.g. MCP_AUTH_ENABLED=true flipped via
+#    `gcloud run services update` when enabling Phase 2b) survive redeploys.
+#
+#    Sizing rationale: single-user tool → --max-instances=3 is enough
+#    headroom for bursts; 512Mi holds node + SDKs + transient MCP objects;
+#    60s timeout is way more than any QBO API call needs.
 echo "Deploying to Cloud Run..."
 gcloud run deploy "$SERVICE" \
   --project="$GCP_PROJECT" \
   --region="$REGION" \
   --image="$IMAGE" \
-  --service-account="$SERVICE_ACCOUNT" \
+  --service-account="$SA_EMAIL" \
   --no-allow-unauthenticated \
   --ingress=all \
   --min-instances=0 \
@@ -66,7 +65,7 @@ gcloud run deploy "$SERVICE" \
   --cpu=1 \
   --memory=512Mi \
   --timeout=60s \
-  --set-env-vars="QBO_CREDENTIAL_MODE=gcp,GCP_PROJECT_ID=${GCP_PROJECT},QBO_SECRET_NAME=${SECRET_NAME},QBO_INLINE_OUTPUT=true,MCP_AUTH_ENABLED=false"
+  --update-env-vars="QBO_CREDENTIAL_MODE=gcp,GCP_PROJECT_ID=${GCP_PROJECT},QBO_SECRET_NAME=${SECRET_NAME},QBO_INLINE_OUTPUT=true"
 
 URL=$(gcloud run services describe "$SERVICE" \
   --project="$GCP_PROJECT" --region="$REGION" --format="value(status.url)")

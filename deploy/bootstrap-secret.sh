@@ -6,19 +6,10 @@
 # Usage:
 #   export GCP_PROJECT=your-gcp-project-id
 #   export QBO_CREDENTIALS_FILE=~/.quickbooks-mcp/credentials.json   # optional
-#   export SECRET_NAME=qbo-credentials                               # optional
 #   ./deploy/bootstrap-secret.sh
-#
-# After running, the secret "qbo-credentials" exists in $GCP_PROJECT with
-# version 1 containing the JSON blob. The Cloud Run service account needs
-# roles/secretmanager.secretAccessor on this secret (setup-service-account.sh
-# handles that).
 
-set -euo pipefail
+source "$(dirname "$0")/common.sh"
 
-: "${GCP_PROJECT:?GCP_PROJECT env var is required (e.g. export GCP_PROJECT=your-project-id)}"
-
-SECRET_NAME="${SECRET_NAME:-qbo-credentials}"
 CREDS_FILE="${QBO_CREDENTIALS_FILE:-$HOME/.quickbooks-mcp/credentials.json}"
 
 if [[ ! -f "$CREDS_FILE" ]]; then
@@ -28,7 +19,6 @@ if [[ ! -f "$CREDS_FILE" ]]; then
   exit 1
 fi
 
-# Validate the JSON shape
 REQUIRED_KEYS=(client_id client_secret access_token refresh_token company_id)
 for k in "${REQUIRED_KEYS[@]}"; do
   if ! jq -e ".$k" "$CREDS_FILE" >/dev/null 2>&1; then
@@ -42,7 +32,6 @@ echo "Secret:  $SECRET_NAME"
 echo "Source:  $CREDS_FILE"
 echo
 
-# Create the secret if it doesn't exist
 if gcloud secrets describe "$SECRET_NAME" --project="$GCP_PROJECT" >/dev/null 2>&1; then
   echo "Secret $SECRET_NAME already exists — adding a new version."
 else
@@ -53,7 +42,6 @@ else
     --labels="app=qbo-mcp,managed-by=qbo-mcp-deploy"
 fi
 
-# Add a version with the credential JSON
 gcloud secrets versions add "$SECRET_NAME" \
   --project="$GCP_PROJECT" \
   --data-file="$CREDS_FILE"

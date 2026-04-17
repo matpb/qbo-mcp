@@ -4,23 +4,14 @@
 #
 # Usage:
 #   export GCP_PROJECT=your-gcp-project-id
-#   export SA_NAME=qbo-mcp-runtime           # optional
-#   export SECRET_NAME=qbo-credentials       # optional
 #   ./deploy/setup-service-account.sh
 
-set -euo pipefail
-
-: "${GCP_PROJECT:?GCP_PROJECT env var is required (e.g. export GCP_PROJECT=your-project-id)}"
-
-SA_NAME="${SA_NAME:-qbo-mcp-runtime}"
-SA_EMAIL="${SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com"
-SECRET_NAME="${SECRET_NAME:-qbo-credentials}"
+source "$(dirname "$0")/common.sh"
 
 echo "Project: $GCP_PROJECT"
 echo "SA:      $SA_EMAIL"
 echo
 
-# Create SA if needed
 if ! gcloud iam service-accounts describe "$SA_EMAIL" \
   --project="$GCP_PROJECT" >/dev/null 2>&1; then
   echo "Creating service account..."
@@ -32,14 +23,14 @@ else
   echo "Service account already exists."
 fi
 
-# Grant access to the specific secret (least privilege — not project-wide)
+# Two sequential bindings — IAM policies have etags so parallel writes race.
+# Deploy scripts run rarely enough that ~2s sequentially is fine.
 echo "Granting secretAccessor + secretVersionAdder on $SECRET_NAME..."
 gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
   --project="$GCP_PROJECT" \
   --member="serviceAccount:${SA_EMAIL}" \
   --role="roles/secretmanager.secretAccessor"
 
-# The runtime also needs to add new versions when tokens rotate
 gcloud secrets add-iam-policy-binding "$SECRET_NAME" \
   --project="$GCP_PROJECT" \
   --member="serviceAccount:${SA_EMAIL}" \
