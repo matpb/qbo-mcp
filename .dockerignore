@@ -1,0 +1,17 @@
+node_modules
+dist
+.git
+.gitignore
+.env
+.env.*
+*.log
+.DS_Store
+deploy
+upstream
+README.md
+JOEL-USER-GUIDE.md
+SETUP-GUIDE.md
+CLAUDE.md
+CODE_OF_CONDUCT.md
+docs
+scripts

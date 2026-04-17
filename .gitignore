@@ -1,0 +1,12 @@
+node_modules
+dist
+dist-lambda
+*.log
+.DS_Store
+
+# Local credential caches — NEVER commit
+.env
+.env.*
+credentials.json
+*.credentials.json
+~.qbo-credentials.json
