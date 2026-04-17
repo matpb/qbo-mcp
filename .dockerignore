@@ -9,9 +9,7 @@ dist
 deploy
 upstream
 README.md
-JOEL-USER-GUIDE.md
-SETUP-GUIDE.md
+docs
 CLAUDE.md
 CODE_OF_CONDUCT.md
-docs
 scripts

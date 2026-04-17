@@ -1,27 +1,30 @@
 #!/usr/bin/env bash
 # One-time bootstrap: create the GCP Secret Manager secret for QBO OAuth
-# credentials, seeded from a local credentials.json produced by the laf-rge
-# stdio flow (qbo_authenticate).
+# credentials, seeded from a local credentials.json produced by laf-rge's
+# stdio OAuth flow (qbo_authenticate).
 #
 # Usage:
-#   export GCP_PROJECT=arctic-eider-414
-#   export QBO_CREDENTIALS_FILE=~/.quickbooks-mcp/credentials.json
+#   export GCP_PROJECT=your-gcp-project-id
+#   export QBO_CREDENTIALS_FILE=~/.quickbooks-mcp/credentials.json   # optional
+#   export SECRET_NAME=qbo-credentials                               # optional
 #   ./deploy/bootstrap-secret.sh
 #
 # After running, the secret "qbo-credentials" exists in $GCP_PROJECT with
 # version 1 containing the JSON blob. The Cloud Run service account needs
-# roles/secretmanager.secretAccessor on this secret (deploy.sh handles that).
+# roles/secretmanager.secretAccessor on this secret (setup-service-account.sh
+# handles that).
 
 set -euo pipefail
 
-PROJECT="${GCP_PROJECT:-arctic-eider-414}"
+: "${GCP_PROJECT:?GCP_PROJECT env var is required (e.g. export GCP_PROJECT=your-project-id)}"
+
 SECRET_NAME="${SECRET_NAME:-qbo-credentials}"
 CREDS_FILE="${QBO_CREDENTIALS_FILE:-$HOME/.quickbooks-mcp/credentials.json}"
 
 if [[ ! -f "$CREDS_FILE" ]]; then
   echo "ERROR: credentials file not found at $CREDS_FILE" >&2
-  echo "Run the laf-rge OAuth flow first to produce this file:" >&2
-  echo "  cd ~/Documents/quickbooks-mcp && ask Claude to 'authenticate with QuickBooks'" >&2
+  echo "Run the laf-rge OAuth Playground flow first to produce this file." >&2
+  echo "See README §'Step 2 — Do the QBO OAuth Playground dance'." >&2
   exit 1
 fi
 
@@ -34,27 +37,27 @@ for k in "${REQUIRED_KEYS[@]}"; do
   fi
 done
 
-echo "Project: $PROJECT"
+echo "Project: $GCP_PROJECT"
 echo "Secret:  $SECRET_NAME"
 echo "Source:  $CREDS_FILE"
 echo
 
 # Create the secret if it doesn't exist
-if gcloud secrets describe "$SECRET_NAME" --project="$PROJECT" >/dev/null 2>&1; then
+if gcloud secrets describe "$SECRET_NAME" --project="$GCP_PROJECT" >/dev/null 2>&1; then
   echo "Secret $SECRET_NAME already exists — adding a new version."
 else
   echo "Creating secret $SECRET_NAME..."
   gcloud secrets create "$SECRET_NAME" \
-    --project="$PROJECT" \
+    --project="$GCP_PROJECT" \
     --replication-policy=automatic \
     --labels="app=qbo-mcp,managed-by=qbo-mcp-deploy"
 fi
 
 # Add a version with the credential JSON
 gcloud secrets versions add "$SECRET_NAME" \
-  --project="$PROJECT" \
+  --project="$GCP_PROJECT" \
   --data-file="$CREDS_FILE"
 
 echo
 echo "Done. Verify with:"
-echo "  gcloud secrets versions access latest --secret=$SECRET_NAME --project=$PROJECT | jq ."
+echo "  gcloud secrets versions access latest --secret=$SECRET_NAME --project=$GCP_PROJECT | jq ."

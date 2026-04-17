@@ -1,14 +1,17 @@
 # qbo-mcp
 
-QuickBooks Online MCP server for Arctic Eider Society, deployed to Google
-Cloud Run in the `arctic-eider-414` project. Forked from
+A production-ready QuickBooks Online MCP server, deployed to Google Cloud Run
+with credentials in Secret Manager. Forked from
 [laf-rge/quickbooks-mcp](https://github.com/laf-rge/quickbooks-mcp) (MIT) with
-GCP-native token storage, Cloud Run entrypoint, and deploy automation.
+GCP-native token storage, a Cloud Run HTTP entrypoint, and deploy automation.
 
-Gives Claude full read/write access to AES's QuickBooks books through natural
+Gives Claude full read/write access to your QuickBooks books through natural
 conversation — P&L, balance sheet, invoices, bills, expenses, journal entries,
-customer/vendor lookup, etc. See [`docs/JOEL-USER-GUIDE.md`](./docs/JOEL-USER-GUIDE.md)
+customer/vendor lookup, etc. See [`docs/USER-GUIDE.md`](./docs/USER-GUIDE.md)
 for the user-facing capability reference (what Claude can and can't do).
+
+**Single-tenant by design.** One Cloud Run service, one QuickBooks company.
+Multi-tenant deployments are out of scope for this repo.
 
 ---
 
@@ -32,27 +35,34 @@ for the user-facing capability reference (what Claude can and can't do).
 - [Blast radius & recovery](#blast-radius--recovery)
 - [Development](#development)
 - [Repository layout](#repository-layout)
+- [License](#license)
 
 ---
 
 ## Quick start
 
-If the GCP project, Intuit Developer app, and a `~/.quickbooks-mcp/credentials.json`
-already exist (i.e. you've done this before), the full deploy is three commands:
+Once you've completed Steps 1 and 2 (Intuit app + OAuth Playground dance) and
+have `~/.quickbooks-mcp/credentials.json` on disk, the full deploy is three
+commands:
 
 ```bash
-cd ~/Documents/qbo-mcp
-export GCP_PROJECT=arctic-eider-414
+export GCP_PROJECT=your-gcp-project-id
 
 ./deploy/bootstrap-secret.sh        # seeds Secret Manager from local creds.json
 ./deploy/setup-service-account.sh   # creates qbo-mcp-runtime SA with scoped IAM
 ./deploy/deploy.sh                  # Cloud Build + Cloud Run deploy
 ```
 
-If anything fails, skip to [Troubleshooting](#troubleshooting).
+Then grant at least one user access:
 
-First time setting this up? Keep reading — the OAuth dance in Step 2 is the
-painful part.
+```bash
+gcloud run services add-iam-policy-binding qbo-mcp \
+  --project=$GCP_PROJECT --region=us-central1 \
+  --member=user:you@example.com --role=roles/run.invoker
+```
+
+If anything fails, skip to [Troubleshooting](#troubleshooting). First time
+setting this up? Keep reading — the OAuth dance in Step 2 is the painful part.
 
 ---
 
@@ -65,7 +75,7 @@ Claude Desktop / claude.ai
         ▼
 ┌────────────────────────────────────────┐
 │  Cloud Run service: qbo-mcp            │
-│  region: us-central1                   │
+│  region: us-central1 (configurable)    │
 │  ingress: all                          │
 │  auth:    --no-allow-unauthenticated   │
 │  runtime SA: qbo-mcp-runtime           │
@@ -95,19 +105,19 @@ Claude Desktop / claude.ai
 
 The QBO refresh token **rotates on every refresh** (typically every hour when
 the server is active). Env vars and Docker secrets are read-only from inside a
-container — we can't write the new refresh token back. A mounted file would work
-on a stateful VM, but Cloud Run's filesystem is ephemeral. Secret Manager's
-"add new version" model is a perfect fit: every rotation adds a version, the
-runtime reads `versions/latest`, old versions age out by policy.
+container — the running process can't write the new refresh token back. A
+mounted file would work on a stateful VM, but Cloud Run's filesystem is
+ephemeral. Secret Manager's "add new version" model is a perfect fit: every
+rotation adds a version, the runtime reads `versions/latest`, old versions age
+out by policy.
 
-### Why Cloud Run (not the SIKU Docker server)
+### Why Cloud Run (not a shared VM)
 
-The SIKU Docker server is shared multi-service. Compromise any co-tenant
-container → pivot to AES financials. Cloud Run runs this service in its own
-container-per-request, no SSH, no shared kernel with anything else, and the
-runtime service account has `secretmanager.secretAccessor` **only on the one
-qbo-credentials secret** — not project-wide. See
-[Blast radius](#blast-radius--recovery) for the full threat model.
+Cloud Run runs this service in its own container-per-request, no SSH, no
+shared kernel with anything else, and the runtime service account has
+`secretmanager.secretAccessor` **only on the one `qbo-credentials` secret** —
+not project-wide. See [Blast radius](#blast-radius--recovery) for the full
+threat model.
 
 ---
 
@@ -117,45 +127,57 @@ qbo-credentials secret** — not project-wide. See
 |---|---|---|
 | `gcloud` CLI | Deploy to Cloud Run + manage secrets | [install](https://cloud.google.com/sdk/docs/install) |
 | `jq` | Validates credentials JSON shape in bootstrap script | `apt install jq` / `brew install jq` |
-| `node` 20+ | Build the TypeScript locally (Cloud Build handles it server-side, but useful for dev) | [install](https://nodejs.org) |
+| `node` 20+ | Build the TypeScript locally (Cloud Build handles it server-side) | [install](https://nodejs.org) |
 | Intuit Developer account | Owns the OAuth client credentials | [developer.intuit.com](https://developer.intuit.com) |
-| QuickBooks Online (Simple Start+) | The actual books — **Solopreneur/Self-Employed has no API access** | AES already has this |
-| GCP project access | `arctic-eider-414`, with roles: Cloud Run Admin, Secret Manager Admin, Service Account Admin, Artifact Registry Admin | `gcloud auth login` |
+| QuickBooks Online (Simple Start+) | The actual books — **Solopreneur/Self-Employed has no API access** | subscribe via QBO |
+| A Google Cloud project | Hosts the Cloud Run service + Secret Manager secret | [console.cloud.google.com](https://console.cloud.google.com) |
+
+You'll need these IAM roles on the GCP project:
+
+- Cloud Run Admin (`roles/run.admin`)
+- Secret Manager Admin (`roles/secretmanager.admin`)
+- Service Account Admin (`roles/iam.serviceAccountAdmin`)
+- Artifact Registry Admin (`roles/artifactregistry.admin`)
+- Cloud Build Editor (`roles/cloudbuild.builds.editor`)
 
 Verify your gcloud context before anything:
 
 ```bash
-gcloud config set project arctic-eider-414
-gcloud auth list                             # confirm logged-in account
-gcloud projects describe arctic-eider-414    # confirm you have access
+export GCP_PROJECT=your-gcp-project-id
+gcloud config set project $GCP_PROJECT
+gcloud auth list                          # confirm logged-in account
+gcloud projects describe $GCP_PROJECT     # confirm you have access
 ```
 
-Verify the required APIs are enabled (already enabled in `arctic-eider-414`):
+Enable the required APIs (one-time, per project):
 
 ```bash
-gcloud services list --enabled --project=arctic-eider-414 \
-  | grep -E "run|secretmanager|artifactregistry|cloudbuild|iam"
+gcloud services enable \
+  run.googleapis.com \
+  secretmanager.googleapis.com \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  --project=$GCP_PROJECT
 ```
-
-Expected output includes: `run.googleapis.com`, `secretmanager.googleapis.com`,
-`artifactregistry.googleapis.com`, `cloudbuild.googleapis.com`,
-`iam.googleapis.com`, `iamcredentials.googleapis.com`.
 
 ---
 
 ## Step 1 — Register an Intuit Developer app
 
-This gives us the `client_id` + `client_secret` needed to start any OAuth flow
+This gives you the `client_id` + `client_secret` needed to start any OAuth flow
 with Intuit.
 
 1. Go to [developer.intuit.com](https://developer.intuit.com) and sign in with
-   the Intuit account that owns AES's books (bookkeeper login — e.g. Joel's).
+   the Intuit account that owns your QuickBooks company.
 2. Click **Dashboard → Create an app**.
 3. Choose **QuickBooks Online and Payments**.
-4. Name the app. Suggested: `AES Claude MCP`.
+4. Name the app (e.g. `Claude MCP`).
 5. Once created, go to **Keys & credentials**.
-6. **Switch to the Production tab** (not Sandbox — we're integrating with the
-   real books). Sandbox tokens won't work against production QBO.
+6. **Switch to the Production tab** (not Sandbox — unless you're explicitly
+   integrating with a Sandbox company). Sandbox tokens won't work against
+   production QBO.
 7. Copy the **Client ID** and **Client Secret**. Store in a password manager.
 
 ### Add the Redirect URI (critical!)
@@ -172,30 +194,31 @@ We use Intuit's own OAuth Playground as the redirect target. Save the changes.
 
 ## Step 2 — Do the QBO OAuth Playground dance
 
-This is the hardest, fiddliest part of the whole process. Go slowly. Get a fresh
-coffee.
+This is the hardest, fiddliest part of the whole process. Go slowly. Get a
+fresh coffee.
 
 ### Why this dance exists
 
 Intuit's OAuth flow requires a registered redirect URI. For a production app
-deployed to a public HTTPS URL you'd use `https://your-service.example.com/oauth/callback`.
-But for our "dev does a one-time bootstrap and pastes tokens into Secret Manager"
-flow, we need a redirect URL that:
+deployed at a public HTTPS URL you'd use something like
+`https://your-service.example.com/oauth/callback`. But for this
+"dev does a one-time bootstrap and pastes tokens into Secret Manager" flow,
+we need a redirect URL that:
 
 1. Is already registered against our Intuit app (the one we added in Step 1)
 2. Shows us the auth code + realmId clearly so we can copy them
 
-Intuit's **OAuth Playground** (`https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl`)
-is the canonical way to do this. It's a hosted page whose job is literally "show
-the user the auth code and realmId that Intuit just redirected with".
+Intuit's **OAuth Playground**
+(`https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl`) is the
+canonical way to do this. It's a hosted page whose job is literally "show the
+user the auth code and realmId that Intuit just redirected with".
 
 ### Prep
 
-Make sure you have the upstream laf-rge repo checked out *somewhere* — we only
-use it to drive the `qbo_authenticate` stdio tool locally:
+Check out the upstream laf-rge repo *somewhere* — we only use it to drive the
+`qbo_authenticate` stdio tool locally:
 
 ```bash
-cd ~/Documents
 git clone https://github.com/laf-rge/quickbooks-mcp.git
 cd quickbooks-mcp
 npm install
@@ -226,15 +249,14 @@ In the laf-rge project directory, create `.mcp.json`:
     "quickbooks": {
       "command": "node",
       "args": ["dist/index.js"],
-      "cwd": "/home/mat/Documents/quickbooks-mcp",
+      "cwd": "/absolute/path/to/quickbooks-mcp",
       "env": {}
     }
   }
 }
 ```
 
-Replace `/home/mat/Documents/quickbooks-mcp` with the actual absolute path.
-
+Replace `/absolute/path/to/quickbooks-mcp` with the actual absolute path.
 Restart Claude Code (or `/mcp` to reconnect) so it picks up the new server.
 
 ### Step 2a — Kick off the auth flow
@@ -243,8 +265,8 @@ In Claude Code, in that project directory, ask:
 
 > "Authenticate with QuickBooks"
 
-Claude will call the `qbo_authenticate` tool and return an **authorization URL**.
-It looks like:
+Claude will call the `qbo_authenticate` tool and return an **authorization
+URL**. It looks like:
 
 ```
 https://appcenter.intuit.com/connect/oauth2?client_id=AB...&scope=com.intuit.quickbooks.accounting&redirect_uri=https%3A%2F%2Fdeveloper.intuit.com%2Fv2%2FOAuth2Playground%2FRedirectUrl&response_type=code&state=...
@@ -254,8 +276,8 @@ https://appcenter.intuit.com/connect/oauth2?client_id=AB...&scope=com.intuit.qui
 
 ### Step 2b — Authorize in the browser
 
-1. Sign in with the Intuit account that owns AES's QBO company.
-2. Select the AES company to connect.
+1. Sign in with the Intuit account that owns your QBO company.
+2. Select the company to connect.
 3. Click **Connect**.
 
 Intuit redirects you to the OAuth Playground. The URL bar will look like:
@@ -279,7 +301,8 @@ From the URL bar (or the Playground page's display):
 
 2. **The code expires in ~2 minutes.** Intuit's auth code window is tight. If
    you stop for lunch between copying the code and completing Step 2d, you'll
-   get `invalid_grant`. Just redo Step 2a → 2b → 2c. It's fast the second time.
+   get `invalid_grant`. Just redo Step 2a → 2b → 2c. It's fast the second
+   time.
 
 3. **Production vs Sandbox mismatch.** If your `.env` says `QBO_SANDBOX=false`
    but the Client ID/Secret are from the Sandbox tab of the Intuit app, every
@@ -303,9 +326,9 @@ Ask Claude:
 
 > "Get the company info from QuickBooks"
 
-If it returns the AES company name, address, fiscal year start, etc. — 🎉
-you're done with the dance. The credentials file is populated and you can close
-Claude Code.
+If it returns your company's name, address, fiscal year start, etc. — 🎉
+you're done with the dance. The credentials file is populated and you can
+close Claude Code.
 
 Inspect the file to confirm:
 
@@ -326,12 +349,12 @@ cat ~/.quickbooks-mcp/credentials.json | jq 'keys'
 
 ## Step 3 — Bootstrap Secret Manager
 
-Now we push the credentials JSON you just produced into GCP Secret Manager so
+Now push the credentials JSON you just produced into GCP Secret Manager so
 the Cloud Run service can read it:
 
 ```bash
-cd ~/Documents/qbo-mcp
-export GCP_PROJECT=arctic-eider-414
+cd /path/to/qbo-mcp
+export GCP_PROJECT=your-gcp-project-id
 ./deploy/bootstrap-secret.sh
 ```
 
@@ -347,7 +370,7 @@ Confirm it worked:
 ```bash
 gcloud secrets versions access latest \
   --secret=qbo-credentials \
-  --project=arctic-eider-414 \
+  --project=$GCP_PROJECT \
   | jq '{company_id, has_access_token: (.access_token | length > 0)}'
 ```
 
@@ -355,7 +378,7 @@ gcloud secrets versions access latest \
 
 | Variable | Default |
 |---|---|
-| `GCP_PROJECT` | `arctic-eider-414` |
+| `GCP_PROJECT` | **required** |
 | `SECRET_NAME` | `qbo-credentials` |
 | `QBO_CREDENTIALS_FILE` | `~/.quickbooks-mcp/credentials.json` |
 
@@ -367,14 +390,14 @@ gcloud secrets versions access latest \
 ./deploy/setup-service-account.sh
 ```
 
-This creates `qbo-mcp-runtime@arctic-eider-414.iam.gserviceaccount.com` and
-grants it two roles **scoped to the one secret only** (not project-wide):
+This creates `qbo-mcp-runtime@$GCP_PROJECT.iam.gserviceaccount.com` and grants
+it two roles **scoped to the one secret only** (not project-wide):
 
 - `roles/secretmanager.secretAccessor` — read the latest version
 - `roles/secretmanager.secretVersionAdder` — write new versions on rotation
 
 The SA has **no other permissions** anywhere in the project. Compromise of the
-SA gives an attacker access to AES QBO tokens and nothing else.
+SA gives an attacker access to the QBO tokens and nothing else.
 
 ---
 
@@ -386,17 +409,17 @@ SA gives an attacker access to AES QBO tokens and nothing else.
 
 This:
 
-1. Creates the Artifact Registry repo `qbo-mcp` in `us-central1` (if needed)
+1. Creates the Artifact Registry repo `qbo-mcp` in your region (if needed)
 2. Builds the Docker image via Cloud Build (no local Docker required)
-3. Pushes to `us-central1-docker.pkg.dev/arctic-eider-414/qbo-mcp/qbo-mcp:<timestamp>`
+3. Pushes to `<region>-docker.pkg.dev/$GCP_PROJECT/qbo-mcp/qbo-mcp:<timestamp>`
 4. Deploys to Cloud Run with:
    - `--no-allow-unauthenticated` (Google IAM is the gate)
    - `--service-account=qbo-mcp-runtime@...`
    - `--min-instances=0` (scale to zero when idle)
-   - `--max-instances=3` (one user — no need to scale wider)
+   - `--max-instances=3` (tune via env var if you expect higher concurrency)
    - `--cpu=1 --memory=512Mi`
    - `--timeout=60s` (Intuit API is rarely slow, 60s is plenty)
-   - Env: `QBO_CREDENTIAL_MODE=gcp`, `GCP_PROJECT_ID=arctic-eider-414`,
+   - Env: `QBO_CREDENTIAL_MODE=gcp`, `GCP_PROJECT_ID=$GCP_PROJECT`,
      `MCP_AUTH_ENABLED=false`
 
 At the end it prints the service URL, e.g.:
@@ -418,7 +441,7 @@ on the service yet. Grant yourself:
 
 ```bash
 gcloud run services add-iam-policy-binding qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1 \
+  --project=$GCP_PROJECT --region=us-central1 \
   --member=user:$(gcloud config get-value account) \
   --role=roles/run.invoker
 ```
@@ -429,13 +452,8 @@ gcloud run services add-iam-policy-binding qbo-mcp \
 
 ```bash
 gcloud run services add-iam-policy-binding qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1 \
-  --member=user:joel@arcticeider.com \
-  --role=roles/run.invoker
-
-gcloud run services add-iam-policy-binding qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1 \
-  --member=user:mat@arcticeider.com \
+  --project=$GCP_PROJECT --region=us-central1 \
+  --member=user:user@example.com \
   --role=roles/run.invoker
 ```
 
@@ -443,15 +461,15 @@ To list who currently has access:
 
 ```bash
 gcloud run services get-iam-policy qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1
+  --project=$GCP_PROJECT --region=us-central1
 ```
 
 To revoke:
 
 ```bash
 gcloud run services remove-iam-policy-binding qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1 \
-  --member=user:former.employee@arcticeider.com \
+  --project=$GCP_PROJECT --region=us-central1 \
+  --member=user:former.user@example.com \
   --role=roles/run.invoker
 ```
 
@@ -459,28 +477,25 @@ gcloud run services remove-iam-policy-binding qbo-mcp \
 
 ## Step 7 — Connect from Claude
 
-### Claude Desktop (recommended for Phase 2a)
+### Claude Desktop (Phase 2a)
 
 Phase 2a uses Google IAM for access control. Claude Desktop talks to the Cloud
 Run service via a small local bridge that signs each request with a Google ID
-token. Two options:
+token.
 
-**Option 1 — `gcloud auth print-identity-token` refresh pattern**
+Two options:
 
-For now, during Phase 2a, the cleanest path is:
+**Option 1 — `gcloud auth print-identity-token` pattern**
 
-1. The user runs `gcloud auth login` on their machine once (`gcloud` installed).
-2. We point Claude Desktop at a local `mcp-remote` proxy configured to inject
+1. The user runs `gcloud auth login` on their machine once.
+2. Point Claude Desktop at a local `mcp-remote` proxy configured to inject
    `Authorization: Bearer $(gcloud auth print-identity-token)` per request.
-
-A helper script for this lives at `scripts/claude-desktop-bridge.md` (to be added).
 
 **Option 2 — Wait for Phase 2b** ([see below](#auth-modes--2a-now-vs-2b-future))
 
-Phase 2b enables claude.ai's native OAuth DCR+PKCE flow. Joel just pastes
-`https://qbo-mcp-xxx.run.app/mcp` into claude.ai's "Add custom connector", signs
-in via the consent screen, and he's connected. No terminal, no gcloud. This is
-the target UX for Joel.
+Phase 2b enables claude.ai's native OAuth DCR+PKCE flow. The user pastes
+`https://qbo-mcp-xxx.run.app/mcp` into claude.ai's "Add custom connector",
+signs in via the consent screen, and is connected. No terminal, no gcloud.
 
 ### claude.ai web
 
@@ -503,7 +518,11 @@ Just re-run:
 
 Cloud Run does a zero-downtime rollout. The new revision gets 100% of traffic
 once it passes its startup probe. Previous revision stays around so you can
-rollback with `gcloud run services update-traffic qbo-mcp --to-revisions=<prev>=100`.
+rollback with:
+
+```bash
+gcloud run services update-traffic qbo-mcp --to-revisions=<prev>=100
+```
 
 ### Rotating the Intuit Client Secret
 
@@ -522,7 +541,8 @@ regular schedule (quarterly is sensible).
 
 ### Rotating the qbo-credentials secret without re-OAuth
 
-If you just want to forcibly add a new secret version (not typical, but possible):
+If you just want to forcibly add a new secret version (not typical, but
+possible):
 
 ```bash
 ./deploy/bootstrap-secret.sh   # points at the same ~/.quickbooks-mcp/credentials.json
@@ -534,17 +554,18 @@ If you just want to forcibly add a new secret version (not typical, but possible
 
 **Intuit's refresh token expires after 100 days of inactivity.** If the server
 hasn't been used in 100+ days, the refresh flow will return `invalid_grant` on
-the next request and nobody can talk to QBO until we re-auth.
+the next request and nobody can talk to QBO until you re-auth.
 
 Mitigations:
 
 - **Active use prevents this.** Normal Claude usage refreshes the access token
-  every ~1h, which rotates the refresh token too, which resets the 100-day clock.
+  every ~1h, which rotates the refresh token too, which resets the 100-day
+  clock.
 - **If it does expire:** just redo Step 2 (OAuth Playground dance) and Step 3
   (bootstrap-secret.sh). Takes ~5 minutes.
 
 To monitor for impending expiry, you could add a weekly Cloud Scheduler job
-that hits `/mcp` with a cheap tool call. Not yet implemented.
+that hits `/mcp` with a cheap tool call. Not included in this repo.
 
 ---
 
@@ -577,7 +598,7 @@ Secret exists but has no versions. Re-run `./deploy/bootstrap-secret.sh`.
 The runtime SA can't read the secret. Check:
 
 ```bash
-gcloud secrets get-iam-policy qbo-credentials --project=arctic-eider-414
+gcloud secrets get-iam-policy qbo-credentials --project=$GCP_PROJECT
 ```
 
 Should include `serviceAccount:qbo-mcp-runtime@...` with roles
@@ -586,11 +607,12 @@ re-run `./deploy/setup-service-account.sh`.
 
 ### `GCP_PROJECT_ID env var is required when QBO_CREDENTIAL_MODE=gcp`
 
-The Cloud Run deploy didn't set `GCP_PROJECT_ID`. Check the deploy.sh output or:
+The Cloud Run deploy didn't set `GCP_PROJECT_ID`. Check the deploy.sh output
+or:
 
 ```bash
 gcloud run services describe qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1 \
+  --project=$GCP_PROJECT --region=us-central1 \
   --format="value(spec.template.spec.containers[0].env)"
 ```
 
@@ -600,9 +622,11 @@ Re-run `./deploy/deploy.sh` — the script sets this automatically.
 
 Access token refresh failed. Two likely causes:
 
-1. **100-day refresh token expiry.** See [Re-authenticating](#re-authenticating-after-100-days).
+1. **100-day refresh token expiry.** See
+   [Re-authenticating](#re-authenticating-after-100-days).
 2. **Client secret was rotated** at developer.intuit.com but `qbo-credentials`
-   still has the old one. Re-do Step 2 with the new client secret, then Step 3.
+   still has the old one. Re-do Step 2 with the new client secret, then Step
+   3.
 
 ### Deploy script fails with `Build timeout`
 
@@ -618,7 +642,7 @@ Check the Cloud Run logs:
 
 ```bash
 gcloud run services logs read qbo-mcp \
-  --project=arctic-eider-414 --region=us-central1 --limit=50
+  --project=$GCP_PROJECT --region=us-central1 --limit=50
 ```
 
 Most common culprit: Secret Manager permissions not yet propagated. IAM can
@@ -627,15 +651,14 @@ take ~60s to propagate globally. Wait a minute, re-deploy.
 ### MCP tools return data but write operations silently do nothing
 
 `QBO_INLINE_OUTPUT=true` should be set (it's the default in the Dockerfile).
-Without it, the server writes output to `/tmp` files that Cloud Run's ephemeral
-filesystem loses on cold start.
+Without it, the server writes output to `/tmp` files that Cloud Run's
+ephemeral filesystem loses on cold start.
 
 ---
 
 ## Environment variables
 
-Set on the Cloud Run service via `deploy.sh`. Override by editing that script
-or running `gcloud run services update qbo-mcp --set-env-vars=...`.
+See [`.env.example`](./.env.example) for a complete, annotated template.
 
 ### Required in production
 
@@ -684,26 +707,28 @@ payload. Env vars override them — useful during a client-secret rotation:
 - Cloud Run: `--no-allow-unauthenticated`
 - `MCP_AUTH_ENABLED=false`
 - Access control: `roles/run.invoker` on specific Google identities
-- Client: Claude Desktop with a local bridge that injects `gcloud auth print-identity-token`
+- Client: Claude Desktop with a local bridge that injects
+  `gcloud auth print-identity-token`
 - **Pro:** no OAuth AS to build. IAM policy is one command per user.
 - **Con:** doesn't work with claude.ai web (can't inject Google ID tokens).
 
-### Phase 2b — OAuth DCR+PKCE (target for Joel)
+### Phase 2b — OAuth DCR+PKCE (target UX for end users)
 
 - Cloud Run: `--allow-unauthenticated` (network-open)
 - `MCP_AUTH_ENABLED=true`
 - Endpoints exposed: `/.well-known/oauth-authorization-server`,
   `/.well-known/oauth-protected-resource`, `/authorize`, `/token`
-- Upstream AS: HiveMind's OAuth AS or Auth0 free tier
-- Access control: allowlist of Google emails at the AS layer
+- Upstream AS: Auth0, Keycloak, WorkOS, or your own OAuth server
+- Access control: allowlist at the AS layer (usually via email domain or
+  explicit user allow-list)
 - Client: claude.ai "Add custom connector" with the URL — it does DCR, PKCE,
   and the consent screen automatically
-- **Pro:** Joel just pastes a URL, signs in, done. Works in claude.ai web.
-- **Con:** one-time setup of the upstream AS to trust our resource.
+- **Pro:** users just paste a URL, sign in, done. Works in claude.ai web.
+- **Con:** one-time setup of the upstream AS to trust this resource.
 
 The OAuth proxy machinery is already in [`src/cloud-run.ts`](./src/cloud-run.ts)
-— gated on `MCP_AUTH_ENABLED`. Enabling 2b is: set env vars, flip the allow-unauthenticated
-flag, done.
+— gated on `MCP_AUTH_ENABLED`. Enabling 2b is: set env vars, flip the
+allow-unauthenticated flag, done.
 
 ---
 
@@ -713,9 +738,10 @@ flag, done.
 
 The `com.intuit.quickbooks.accounting` scope grants read + write access to:
 
-**Read:** full P&L, balance sheet, GL, cash flow, trial balance, every invoice,
-bill, expense, journal entry, deposit, transfer, customer list (with emails +
-addresses + tax IDs), vendor list, bank balances, bank transaction activity.
+**Read:** full P&L, balance sheet, GL, cash flow, trial balance, every
+invoice, bill, expense, journal entry, deposit, transfer, customer list (with
+emails + addresses + tax IDs), vendor list, bank balances, bank transaction
+activity.
 
 **Write:** create / edit / delete invoices, bills, expenses, sales receipts,
 deposits, journal entries, vendor credits, customers, vendors.
@@ -734,7 +760,7 @@ deposits, journal entries, vendor credits, customers, vendors.
 |---|---|---|
 | Runtime SA key leaked | Secret reads (+ writes new versions) | Rotate SA, re-run setup-service-account.sh |
 | Entire Secret Manager secret leaked | Full QBO access for life of tokens | Rotate Intuit client secret (instantly invalidates all tokens) |
-| Intuit Client Secret leaked via GitHub etc. | New OAuth flows could be initiated | Rotate Intuit client secret + redo OAuth dance |
+| Intuit Client Secret leaked | New OAuth flows could be initiated | Rotate Intuit client secret + redo OAuth dance |
 | Cloud Run service hijacked | Attacker has whatever the runtime SA has | Rollback revision; rotate SA; rotate client secret |
 
 ### Recovery playbook (hot path)
@@ -742,19 +768,19 @@ deposits, journal entries, vendor credits, customers, vendors.
 If you suspect compromise:
 
 ```bash
-# 1. Kill outbound QBO access immediately
-#    (at developer.intuit.com → your app → Keys & credentials → rotate secret)
+# 1. Kill outbound QBO access immediately.
+#    At developer.intuit.com → your app → Keys & credentials → rotate secret.
 #    This instantly invalidates every access_token and refresh_token.
 
-# 2. Also revoke the app from QBO directly
-#    Joel: QBO → Apps → Connected apps → Disconnect "AES Claude MCP"
+# 2. Also revoke the app from the QBO side:
+#    QBO → Apps → Connected apps → Disconnect "Claude MCP"
 
-# 3. Check the QBO audit log for anything weird in the window
+# 3. Check the QBO audit log for anything suspicious in the window:
 #    QBO → Gear → Audit Log → filter by user + date
 
-# 4. Re-do OAuth dance (Step 2) with the new client secret
-# 5. Re-run bootstrap-secret.sh to push new tokens
-# 6. If Cloud Run itself was compromised: redeploy from known-good commit
+# 4. Re-do OAuth dance (Step 2) with the new client secret.
+# 5. Re-run bootstrap-secret.sh to push new tokens.
+# 6. If Cloud Run itself was compromised: redeploy from known-good commit.
 ./deploy/deploy.sh
 ```
 
@@ -781,21 +807,14 @@ PORT=8099 node dist/cloud-run.js
 curl http://localhost:8099/healthz
 ```
 
-### Local run (cloud-run HTTP mode, reading from GCP Secret Manager)
+### Local run (cloud-run HTTP mode, reading from real Secret Manager)
 
 ```bash
 gcloud auth application-default login
 export QBO_CREDENTIAL_MODE=gcp
-export GCP_PROJECT_ID=arctic-eider-414
+export GCP_PROJECT_ID=$GCP_PROJECT
 npm run build
 PORT=8099 node dist/cloud-run.js
-```
-
-### Test builds
-
-```bash
-npm run build            # tsc
-npm test                 # (upstream tests — may need adapter)
 ```
 
 ### Cutting a new deploy
@@ -810,6 +829,7 @@ includes a UTC timestamp so every deploy is a fresh revision.
 ```
 qbo-mcp/
 ├── README.md                       — this file
+├── .env.example                    — annotated env var reference
 ├── Dockerfile                      — multi-stage Node 20-alpine
 ├── .dockerignore
 ├── .gitignore
@@ -851,7 +871,7 @@ qbo-mcp/
 │   └── utils/                      — output mode, money formatting, etc.
 │
 └── docs/
-    └── JOEL-USER-GUIDE.md          — user-facing capability reference (TODO: move here)
+    └── USER-GUIDE.md               — user-facing capability reference
 ```
 
 `⭐` = changes vs. upstream laf-rge. Everything else is unmodified.

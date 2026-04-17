@@ -1,7 +1,7 @@
 {
   "name": "qbo-mcp",
   "version": "0.1.0",
-  "description": "QuickBooks Online MCP server — Cloud Run deploy for AES (forked from laf-rge/quickbooks-mcp)",
+  "description": "QuickBooks Online MCP server with Google Cloud Run deploy (forked from laf-rge/quickbooks-mcp)",
   "license": "MIT",
   "private": true,
   "type": "module",
