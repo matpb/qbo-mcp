@@ -17,7 +17,8 @@ test
 tests
 **/*.test.ts
 **/*.spec.ts
-deploy
+data
+docker-compose.yml
 docs
 scripts
 README.md

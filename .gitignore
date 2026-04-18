@@ -4,9 +4,13 @@ dist-lambda
 *.log
 .DS_Store
 
+# Host-side Docker volume for OAuth tokens — NEVER commit
+data/
+
 # Local credential caches — NEVER commit
 .env
 .env.*
+!.env.example
 credentials.json
 *.credentials.json
-~.qbo-credentials.json
+dev-credentials.json

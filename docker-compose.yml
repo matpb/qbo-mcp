@@ -1,0 +1,28 @@
+services:
+  qbo-mcp:
+    build: .
+    image: qbo-mcp:latest
+    container_name: qbo-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      QBO_CREDENTIAL_MODE: local
+      QBO_CREDENTIAL_FILE: /data/qbo-credentials.json
+      QBO_INLINE_OUTPUT: "true"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8420:8080"
+    # Lock the service down at the Docker layer. The reverse proxy (APISIX /
+    # nginx / Caddy) in front of it handles TLS + public routing.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s

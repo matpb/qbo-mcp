@@ -1,20 +1,21 @@
-// Cloud Run HTTP entrypoint for QuickBooks MCP server.
+// HTTP entrypoint — designed to run as a Docker container behind a TLS
+// reverse proxy (APISIX / nginx / Caddy). Listens on $PORT.
 //
-// Speaks MCP Streamable HTTP on POST /mcp. Listens on $PORT (Cloud Run
-// convention). Token storage is via GCP Secret Manager (see gcp-provider.ts).
+// Routes:
+//   GET  /healthz                             liveness probe
+//   POST /mcp                                 Streamable HTTP MCP transport
+//   GET  /qbo/connect?token=$QBO_SETUP_TOKEN  begin Intuit OAuth (admin bootstrap)
+//   GET  /qbo/callback?code=&realmId=&state=  Intuit redirect target — exchanges code
+//   GET  /qbo/status                          is the server bound to a company?
 //
-// Auth model (toggleable via MCP_AUTH_ENABLED):
-//   false (default for first ship) — /mcp is unauthenticated at the app
-//     layer. Relies on Cloud Run's "require authentication" setting + IAM
-//     invoker role to gate access at the network layer.
-//   true — full OAuth 2.1 gate for claude.ai custom connectors. Exposes the
-//     standard discovery endpoints and proxies /authorize + /token to the
-//     upstream AS configured by MCP_AUTHORIZE_URL / MCP_TOKEN_URL. Bearer
-//     tokens are validated by auth/token-validator.ts.
+// Phase 2b endpoints (gated on MCP_AUTH_ENABLED) — claude.ai custom-connector
+// OAuth AS proxy. Off by default. See README.
 //
 // See README "Environment variables" for the full env-var reference.
 
 import { createServer, IncomingMessage, ServerResponse } from "http";
+import { randomBytes } from "crypto";
+import OAuthClient from "intuit-oauth";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
   CallToolRequestSchema,
@@ -24,18 +25,20 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { setOutputMode } from "./utils/output.js";
 import { toolDefinitions, executeTool } from "./tools/index.js";
 import { getAuthConfig, validateToken } from "./auth/token-validator.js";
+import { getCredentialProvider } from "./credentials/index.js";
+import type { QBCredentials } from "./credentials/index.js";
 
-// Keep in sync with package.json version. (ESM + NodeNext JSON imports add
-// build-time friction; a two-line manual bump on release is cheaper.)
+// Keep in sync with package.json. ESM + NodeNext JSON imports are fiddly —
+// a two-line manual bump is cheaper than the build-config churn.
 const SERVER_VERSION = "0.1.0";
 
 setOutputMode("http");
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
+const SETUP_TOKEN = process.env.QBO_SETUP_TOKEN || "";
+const QBO_REDIRECT_URI = process.env.QBO_REDIRECT_URI || "";
+const QBO_SANDBOX = process.env.QBO_SANDBOX === "true";
 
-// Tools that only make sense in the stdio (local dev) transport — their
-// semantics assume a human operating Claude Code through the OAuth Playground
-// flow. Filter them out before exposing the tool list over HTTP.
 const STDIO_ONLY_TOOLS = new Set(["qbo_authenticate"]);
 
 type AuthConfig = {
@@ -106,14 +109,12 @@ async function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
-/** Host+proto of this request, without a path. */
 function publicBase(req: IncomingMessage): string {
   const proto = (req.headers["x-forwarded-proto"] as string) || "https";
   const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "localhost";
   return `${proto}://${host}`;
 }
 
-/** Full public URL for the current request (or an explicit override path). */
 function publicUrl(req: IncomingMessage, overridePath?: string): string {
   return `${publicBase(req)}${overridePath ?? req.url ?? "/"}`;
 }
@@ -154,8 +155,207 @@ function sendJson(
   res.end(JSON.stringify(body));
 }
 
+function sendHtml(res: ServerResponse, status: number, html: string): void {
+  applyCors(res);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.statusCode = status;
+  res.end(html);
+}
+
 // --------------------------------------------------------------------------
-// OAuth discovery and proxy endpoints (only served when AUTH is loaded)
+// /qbo/connect + /qbo/callback — user-initiated OAuth with Intuit
+// --------------------------------------------------------------------------
+
+// CSRF state store — maps random state tokens to a creation timestamp.
+// In-memory only: single container deploy, and stale entries auto-prune.
+const STATE_TTL_MS = 5 * 60 * 1000;
+const pendingStates = new Map<string, number>();
+
+function issueState(): string {
+  pruneStates();
+  const state = randomBytes(24).toString("hex");
+  pendingStates.set(state, Date.now());
+  return state;
+}
+
+function consumeState(state: string): boolean {
+  pruneStates();
+  const ts = pendingStates.get(state);
+  if (!ts) return false;
+  pendingStates.delete(state);
+  return Date.now() - ts <= STATE_TTL_MS;
+}
+
+function pruneStates(): void {
+  const cutoff = Date.now() - STATE_TTL_MS;
+  for (const [state, ts] of pendingStates.entries()) {
+    if (ts < cutoff) pendingStates.delete(state);
+  }
+}
+
+function buildIntuitOAuthClient(): OAuthClient {
+  const clientId = process.env.QBO_CLIENT_ID;
+  const clientSecret = process.env.QBO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    throw new Error("QBO_CLIENT_ID and QBO_CLIENT_SECRET env vars are required");
+  }
+  if (!QBO_REDIRECT_URI) {
+    throw new Error("QBO_REDIRECT_URI env var is required (e.g. https://qbo.example.com/qbo/callback)");
+  }
+  return new OAuthClient({
+    clientId,
+    clientSecret,
+    environment: QBO_SANDBOX ? "sandbox" : "production",
+    redirectUri: QBO_REDIRECT_URI,
+  });
+}
+
+function handleQboConnect(req: IncomingMessage, res: ServerResponse): void {
+  const url = new URL(req.url ?? "/", publicBase(req));
+  const providedToken = url.searchParams.get("token") || "";
+
+  // Gate: if QBO_SETUP_TOKEN is set, require a matching ?token=. If unset, the
+  // route is open (useful for local dev; not recommended in production).
+  if (SETUP_TOKEN && providedToken !== SETUP_TOKEN) {
+    return sendJson(res, 403, {
+      error: "forbidden",
+      error_description: "Invalid or missing setup token",
+    });
+  }
+
+  let authUri: string;
+  try {
+    const client = buildIntuitOAuthClient();
+    authUri = client.authorizeUri({
+      scope: [OAuthClient.scopes.Accounting],
+      state: issueState(),
+    });
+  } catch (err) {
+    return sendJson(res, 500, {
+      error: "misconfigured",
+      error_description: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  res.statusCode = 302;
+  res.setHeader("Location", authUri);
+  res.end();
+}
+
+async function handleQboCallback(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? "/", publicBase(req));
+  const code = url.searchParams.get("code");
+  const realmId = url.searchParams.get("realmId");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+
+  if (error) {
+    return sendHtml(
+      res,
+      400,
+      renderErrorPage(
+        "Intuit returned an error",
+        `${error} — ${url.searchParams.get("error_description") || "(no description)"}`
+      )
+    );
+  }
+  if (!code || !realmId || !state) {
+    return sendHtml(res, 400, renderErrorPage("Missing parameters", "code, realmId, and state are all required"));
+  }
+  if (!consumeState(state)) {
+    return sendHtml(res, 400, renderErrorPage("Invalid state", "Your OAuth session expired or state was forged. Restart at /qbo/connect."));
+  }
+
+  try {
+    const client = buildIntuitOAuthClient();
+    const authResponse = await client.createToken(req.url!);
+    const token = authResponse.getToken();
+
+    const credentials: QBCredentials = {
+      client_id: process.env.QBO_CLIENT_ID!,
+      client_secret: process.env.QBO_CLIENT_SECRET!,
+      redirect_url: QBO_REDIRECT_URI,
+      access_token: token.access_token,
+      refresh_token: token.refresh_token,
+      company_id: realmId,
+    };
+
+    await getCredentialProvider().saveCredentials(credentials);
+
+    sendHtml(
+      res,
+      200,
+      renderSuccessPage(realmId, QBO_SANDBOX ? "sandbox" : "production")
+    );
+  } catch (err) {
+    sendHtml(
+      res,
+      500,
+      renderErrorPage(
+        "Token exchange failed",
+        err instanceof Error ? err.message : String(err)
+      )
+    );
+  }
+}
+
+async function handleQboStatus(res: ServerResponse): Promise<void> {
+  try {
+    const configured = await getCredentialProvider().isConfigured();
+    const companyId = configured ? await getCredentialProvider().getCompanyId() : null;
+    sendJson(res, 200, {
+      configured,
+      company_id: companyId,
+      environment: QBO_SANDBOX ? "sandbox" : "production",
+    });
+  } catch (err) {
+    sendJson(res, 200, {
+      configured: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function renderSuccessPage(realmId: string, env: string): string {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>QuickBooks connected</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:4rem auto;padding:0 1rem;color:#222}
+  .ok{color:#1b7f3a}.mono{font-family:ui-monospace,Menlo,monospace;background:#f4f4f4;padding:2px 6px;border-radius:3px}
+  h1{margin-bottom:.2rem}
+</style></head><body>
+<h1 class="ok">✓ QuickBooks connected</h1>
+<p>Tokens have been saved. This server can now talk to QuickBooks on behalf of the company below.</p>
+<ul>
+  <li>Company (realm) ID: <span class="mono">${escapeHtml(realmId)}</span></li>
+  <li>Environment: <span class="mono">${escapeHtml(env)}</span></li>
+</ul>
+<p>You can close this tab. Point your MCP client at <span class="mono">/mcp</span> on this host to start using the tools.</p>
+</body></html>`;
+}
+
+function renderErrorPage(title: string, detail: string): string {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>QBO connect failed</title>
+<style>
+  body{font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:4rem auto;padding:0 1rem;color:#222}
+  .err{color:#b00020}.mono{font-family:ui-monospace,Menlo,monospace;background:#f4f4f4;padding:2px 6px;border-radius:3px}
+  pre{background:#f4f4f4;padding:12px;border-radius:4px;overflow-x:auto}
+</style></head><body>
+<h1 class="err">✗ ${escapeHtml(title)}</h1>
+<pre>${escapeHtml(detail)}</pre>
+<p>Restart the flow at <span class="mono">/qbo/connect</span>.</p>
+</body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)
+  );
+}
+
+// --------------------------------------------------------------------------
+// Phase 2b OAuth AS proxy (for claude.ai DCR+PKCE connectors — off by default)
 // --------------------------------------------------------------------------
 
 function handleAuthServerMetadata(req: IncomingMessage, res: ServerResponse, auth: AuthConfig): void {
@@ -183,8 +383,7 @@ function handleResourceMetadata(req: IncomingMessage, res: ServerResponse, auth:
 
 function handleAuthorize(req: IncomingMessage, res: ServerResponse, auth: AuthConfig): void {
   if (!auth.authorizeUrl) {
-    sendJson(res, 500, { error: "authorize_not_configured" });
-    return;
+    return sendJson(res, 500, { error: "authorize_not_configured" });
   }
   const url = new URL(req.url ?? "/", publicBase(req));
   const params = new URLSearchParams();
@@ -195,7 +394,6 @@ function handleAuthorize(req: IncomingMessage, res: ServerResponse, auth: AuthCo
         ? hasOffline ? `${auth.scope} offline_access` : auth.scope
         : value);
     } else if (key === "prompt" && value === "consent") {
-      // Some upstream AS tenants disallow consent prompts for unverified clients
       params.set("prompt", "select_account");
     } else {
       params.set(key, value);
@@ -210,14 +408,13 @@ function handleAuthorize(req: IncomingMessage, res: ServerResponse, auth: AuthCo
   res.end();
 }
 
-async function handleToken(
+async function handleTokenProxy(
   res: ServerResponse,
   body: string,
   auth: AuthConfig
 ): Promise<void> {
   if (!auth.tokenUrl) {
-    sendJson(res, 500, { error: "token_not_configured" });
-    return;
+    return sendJson(res, 500, { error: "token_not_configured" });
   }
   const params = new URLSearchParams(body);
   if (auth.scope) {
@@ -254,7 +451,7 @@ function extractBearerToken(req: IncomingMessage): string | null {
 }
 
 // --------------------------------------------------------------------------
-// Main router
+// MCP tool endpoint
 // --------------------------------------------------------------------------
 
 async function handleMcpPost(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -281,6 +478,10 @@ async function handleMcpPost(req: IncomingMessage, res: ServerResponse): Promise
   }
 }
 
+// --------------------------------------------------------------------------
+// Router
+// --------------------------------------------------------------------------
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const method = req.method || "GET";
   const urlPath = (req.url || "/").split("?")[0];
@@ -296,6 +497,16 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return sendJson(res, 200, { status: "ok" });
   }
 
+  if (method === "GET" && urlPath === "/qbo/connect") {
+    return handleQboConnect(req, res);
+  }
+  if (method === "GET" && urlPath === "/qbo/callback") {
+    return handleQboCallback(req, res);
+  }
+  if (method === "GET" && urlPath === "/qbo/status") {
+    return handleQboStatus(res);
+  }
+
   if (AUTH) {
     if (method === "GET" && urlPath === "/.well-known/oauth-authorization-server") {
       return handleAuthServerMetadata(req, res, AUTH);
@@ -307,7 +518,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return handleAuthorize(req, res, AUTH);
     }
     if (method === "POST" && urlPath === "/token") {
-      return handleToken(res, await readBody(req), AUTH);
+      return handleTokenProxy(res, await readBody(req), AUTH);
     }
   }
 
@@ -341,6 +552,6 @@ const server = createServer((req, res) => {
 server.listen(PORT, () => {
   console.log(
     `QuickBooks MCP server listening on :${PORT} ` +
-      `(auth=${AUTH ? "enabled" : "disabled"}, mode=${process.env.QBO_CREDENTIAL_MODE || "local"})`
+      `(auth=${AUTH ? "enabled" : "disabled"}, mode=${process.env.QBO_CREDENTIAL_MODE || "local"}, setup-gate=${SETUP_TOKEN ? "on" : "off"})`
   );
 });

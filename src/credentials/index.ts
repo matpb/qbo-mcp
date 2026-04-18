@@ -1,33 +1,30 @@
 // Credential provider factory and exports
 
 export type { QBCredentials, CredentialProvider, CredentialMode } from "./types.js";
-export { getCredentialMode } from "./types.js";
+export { getCredentialMode, mergeEnvOverrides, DEFAULT_REDIRECT_URL } from "./types.js";
 export { AWSCredentialProvider } from "./aws-provider.js";
 export { LocalCredentialProvider } from "./local-provider.js";
-export { GCPCredentialProvider } from "./gcp-provider.js";
 
 import { getCredentialMode } from "./types.js";
 import type { CredentialProvider } from "./types.js";
 import { AWSCredentialProvider } from "./aws-provider.js";
 import { LocalCredentialProvider } from "./local-provider.js";
-import { GCPCredentialProvider } from "./gcp-provider.js";
 
 // Singleton provider instance
 let providerInstance: CredentialProvider | null = null;
 
 /**
  * Get the credential provider based on QBO_CREDENTIAL_MODE environment variable
- * - "gcp":   GCP Secret Manager (Cloud Run deploys)
- * - "aws":   AWS Secrets Manager + SSM (Lambda deploys)
- * - "local" (default): ~/.quickbooks-mcp/credentials.json
+ * - "aws":   AWS Secrets Manager + SSM (for Lambda deploys — upstream-only)
+ * - "local" (default): JSON file at $QBO_CREDENTIAL_FILE or
+ *                      ~/.quickbooks-mcp/credentials.json. For Docker,
+ *                      mount a host volume and point the env var at it.
  */
 export function getCredentialProvider(): CredentialProvider {
   if (!providerInstance) {
     const mode = getCredentialMode();
     if (mode === "aws") {
       providerInstance = new AWSCredentialProvider();
-    } else if (mode === "gcp") {
-      providerInstance = new GCPCredentialProvider();
     } else {
       providerInstance = new LocalCredentialProvider();
     }
@@ -48,8 +45,4 @@ export function isLocalMode(): boolean {
 
 export function isAWSMode(): boolean {
   return getCredentialMode() === "aws";
-}
-
-export function isGCPMode(): boolean {
-  return getCredentialMode() === "gcp";
 }
