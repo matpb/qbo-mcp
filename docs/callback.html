@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>qbo-mcp · OAuth Callback</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 640px; margin: 4rem auto; padding: 0 1rem; color: #222; line-height: 1.5; }
+  h1 { font-size: 1.4rem; }
+  code { background: #f4f4f4; padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.9em; }
+  .err { color: #a33; }
+  .ok  { color: #2a6; }
+</style>
+</head>
+<body>
+<h1 id="title">Finishing QuickBooks connection…</h1>
+<p id="msg">Redirecting you back to your local qbo-mcp server.</p>
+
+<!--
+  This page is an OAuth "loopback bridge" for qbo-mcp running locally on the user's
+  machine. Intuit requires an HTTPS redirect_uri for production apps and disallows
+  localhost/127.0.0.1, so Intuit sends the code here (HTTPS) and this static page
+  bounces it to the local listener at 127.0.0.1:<port>.
+
+  It never has access to your QuickBooks data. It only hands the short-lived
+  authorization code to the MCP server running on your own machine, which then
+  exchanges it for tokens directly with Intuit. No server-side code runs on this
+  page — the source is the repo at github.com/matpb/qbo-mcp (docs/callback.html).
+-->
+
+<script>
+(function () {
+  var title = document.getElementById("title");
+  var msg   = document.getElementById("msg");
+  var qs    = new URLSearchParams(window.location.search);
+
+  var code    = qs.get("code");
+  var realmId = qs.get("realmId");
+  var state   = qs.get("state") || "";
+  var error   = qs.get("error");
+
+  function fail(text) {
+    title.textContent = "Connection failed";
+    title.className = "err";
+    msg.textContent = text;
+  }
+
+  if (error) { return fail("Intuit returned an error: " + error); }
+  if (!code || !realmId || !state) {
+    return fail("Missing code, realmId, or state in the callback URL. Start the connection again from Claude.");
+  }
+
+  // state = "<nonce>.<port>" — extract port and validate strictly.
+  var parts = state.split(".");
+  if (parts.length !== 2) { return fail("Malformed state parameter."); }
+  var port = parseInt(parts[1], 10);
+  if (!(port >= 1024 && port <= 65535)) {
+    return fail("State port is out of range.");
+  }
+
+  // Hard-redirect to the loopback listener. Only ever 127.0.0.1.
+  var target = "http://127.0.0.1:" + port + "/cb"
+             + "?code="    + encodeURIComponent(code)
+             + "&realmId=" + encodeURIComponent(realmId)
+             + "&state="   + encodeURIComponent(state);
+  window.location.replace(target);
+})();
+</script>
+</body>
+</html>
