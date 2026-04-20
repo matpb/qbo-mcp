@@ -2,6 +2,7 @@ node_modules
 dist
 dist-lambda
 *.log
+*.mcpb
 .DS_Store
 
 # Host-side Docker volume for OAuth tokens — NEVER commit

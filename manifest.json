@@ -1,0 +1,62 @@
+{
+  "manifest_version": "0.3",
+  "name": "qbo-mcp",
+  "display_name": "QuickBooks Online",
+  "version": "0.2.0",
+  "description": "Query and manage QuickBooks Online through Claude — accounts, transactions, invoices, bills, customers, vendors, reports (P&L, balance sheet, trial balance).",
+  "long_description": "Local MCP server that wraps Intuit's QuickBooks Online API. Uses an automatic browser-based OAuth flow on first use — no copy-paste of tokens. Credentials and tokens are stored only on your machine at ~/.quickbooks-mcp/credentials.json.",
+  "author": {
+    "name": "Mat (matpb)",
+    "url": "https://github.com/matpb/qbo-mcp"
+  },
+  "homepage": "https://github.com/matpb/qbo-mcp",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/matpb/qbo-mcp"
+  },
+  "license": "MIT",
+  "keywords": ["quickbooks", "qbo", "accounting", "intuit", "finance"],
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "QBO_CLIENT_ID": "${user_config.client_id}",
+        "QBO_CLIENT_SECRET": "${user_config.client_secret}",
+        "QBO_SANDBOX": "${user_config.sandbox}",
+        "QBO_CREDENTIAL_MODE": "local"
+      }
+    }
+  },
+  "user_config": {
+    "client_id": {
+      "type": "string",
+      "title": "Intuit Client ID",
+      "description": "From your Intuit Developer app → Keys & credentials.",
+      "required": true
+    },
+    "client_secret": {
+      "type": "string",
+      "title": "Intuit Client Secret",
+      "description": "From your Intuit Developer app → Keys & credentials.",
+      "sensitive": true,
+      "required": true
+    },
+    "sandbox": {
+      "type": "boolean",
+      "title": "Use Intuit Sandbox",
+      "description": "Connect to the Intuit sandbox (test data) instead of your real QuickBooks company. Leave off for production.",
+      "default": false,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.10.0",
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18.0.0"
+    }
+  }
+}

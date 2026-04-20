@@ -53,8 +53,11 @@ export function getCredentialMode(): CredentialMode {
   return "local";
 }
 
-export const DEFAULT_REDIRECT_URL =
-  "https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl";
+// Public HTTPS bounce page hosted via GitHub Pages. Intuit requires HTTPS and
+// rejects localhost/IP redirect URIs for production apps — the bounce page is a
+// pure client-side redirect to the local loopback listener (source in docs/).
+// Override with QBO_REDIRECT_URL for self-hosted deployments.
+export const DEFAULT_REDIRECT_URL = "https://qbo-mcp.matpb.com/callback.html";
 
 /**
  * Merge stored credentials with env-var overrides. QBO_CLIENT_ID and

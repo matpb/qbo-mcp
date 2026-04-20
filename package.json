@@ -1,7 +1,7 @@
 {
   "name": "qbo-mcp",
-  "version": "0.1.0",
-  "description": "QuickBooks Online MCP server with user-initiated OAuth and Docker deploy (forked from laf-rge/quickbooks-mcp)",
+  "version": "0.2.0",
+  "description": "QuickBooks Online MCP server for Claude Desktop — local-first, auto-OAuth, packaged as .mcpb (forked from laf-rge/quickbooks-mcp)",
   "license": "MIT",
   "private": true,
   "type": "module",
