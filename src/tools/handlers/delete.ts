@@ -2,7 +2,6 @@
 
 import QuickBooks from "node-quickbooks";
 import { promisify } from "../../client/index.js";
-import { formatDollars } from "../../utils/index.js";
 
 type EntityType = "journal_entry" | "bill" | "invoice" | "deposit" | "sales_receipt" | "expense" | "vendor_credit";
 
@@ -22,7 +21,7 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       const lines = [`Journal Entry #${e.Id}`];
       lines.push(`  Date: ${e.TxnDate}`);
       if (e.DocNumber) lines.push(`  Journal no.: ${e.DocNumber}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -37,7 +36,7 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       lines.push(`  Date: ${e.TxnDate}`);
       if (e.DueDate) lines.push(`  Due: ${e.DueDate}`);
       if (e.DocNumber) lines.push(`  Ref no.: ${e.DocNumber}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -52,8 +51,8 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       lines.push(`  Date: ${e.TxnDate}`);
       if (e.DueDate) lines.push(`  Due: ${e.DueDate}`);
       if (e.DocNumber) lines.push(`  Ref no.: ${e.DocNumber}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
-      if (e.Balance != null) lines.push(`  Balance: ${formatDollars(e.Balance as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
+      if (e.Balance != null) lines.push(`  Balance: $${(e.Balance as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -66,7 +65,7 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       const acct = (e.DepositToAccountRef as Record<string, string>)?.name || "(unknown account)";
       const lines = [`Deposit #${e.Id} — to ${acct}`];
       lines.push(`  Date: ${e.TxnDate}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -80,7 +79,7 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       const lines = [`Sales Receipt #${e.Id} — ${customer}`];
       lines.push(`  Date: ${e.TxnDate}`);
       if (e.DocNumber) lines.push(`  Ref no.: ${e.DocNumber}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -95,7 +94,7 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       lines.push(`  Date: ${e.TxnDate}`);
       if (e.PaymentType) lines.push(`  Payment type: ${e.PaymentType}`);
       if (e.DocNumber) lines.push(`  Ref no.: ${e.DocNumber}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -109,7 +108,7 @@ const ENTITY_CONFIG: Record<EntityType, EntityConfig> = {
       const lines = [`Vendor Credit #${e.Id} — ${vendor}`];
       lines.push(`  Date: ${e.TxnDate}`);
       if (e.DocNumber) lines.push(`  Ref no.: ${e.DocNumber}`);
-      if (e.TotalAmt != null) lines.push(`  Total: ${formatDollars(e.TotalAmt as number)}`);
+      if (e.TotalAmt != null) lines.push(`  Total: $${(e.TotalAmt as number).toFixed(2)}`);
       if (e.PrivateNote) lines.push(`  Memo: ${e.PrivateNote}`);
       return lines.join("\n");
     },
@@ -144,9 +143,10 @@ export async function handleDeleteEntity(
     };
   }
 
-  // Execute delete
+  // Execute delete — pass id as string so node-quickbooks fetches the entity
+  // (required for SyncToken); passing an object skips the fetch and QBO returns 400.
   await promisify<unknown>((cb) =>
-    (client as any)[config.deleteMethod]({ Id: id }, cb)
+    (client as any)[config.deleteMethod](id, cb)
   );
 
   return {

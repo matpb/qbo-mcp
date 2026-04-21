@@ -1,17 +1,17 @@
 # Source and build artifacts not needed at runtime
-src/
-tsconfig.json
+/src/
+/tsconfig.json
 
 # Docker / HTTP deploy artifacts — MCPB is the STDIO / local path
-Dockerfile
-docker-compose.yml
-.dockerignore
-docs/
+/Dockerfile
+/docker-compose.yml
+/.dockerignore
+/docs/
 
 # Dev tooling
-.claude/
-.gitignore
-.env.example
+/.claude/
+/.gitignore
+/.env.example
 
 # Source maps (mcpb excludes by default, listed here for clarity)
 dist/**/*.map

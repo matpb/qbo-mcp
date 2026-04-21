@@ -162,6 +162,29 @@ export async function resolveItem(client: QuickBooks, nameOrId: string): Promise
     return { value: cached.Id, name: cached.Name };
   }
 
+  // Pure numeric input → treat as QB Item ID and fetch directly
+  if (/^\d+$/.test(nameOrId)) {
+    try {
+      const item = await promisify<{ Id: string; Name: string; FullyQualifiedName?: string; Type?: string; UnitPrice?: number; Active?: boolean }>((cb) =>
+        (client as unknown as Record<string, Function>).getItem(nameOrId, cb)
+      );
+      const entry: CachedItem = {
+        Id: item.Id,
+        Name: item.Name,
+        FullyQualifiedName: item.FullyQualifiedName,
+        Type: item.Type,
+        UnitPrice: item.UnitPrice,
+        Active: item.Active,
+        fetchedAt: Date.now(),
+      };
+      itemCacheById.set(item.Id, entry);
+      itemCacheByName.set(item.Name.toLowerCase(), entry);
+      return { value: item.Id, name: item.Name };
+    } catch {
+      // Fall through to name lookup — numeric string might still be a Name
+    }
+  }
+
   // Query QB for this specific item
   // Try exact name match first, then partial
   const result = await promisify<unknown>((cb) =>
@@ -234,6 +257,26 @@ export async function resolveCustomer(client: QuickBooks, nameOrId: string): Pro
   const cached = customerCacheById.get(nameOrId) || customerCacheByName.get(nameOrId.toLowerCase());
   if (cached && (Date.now() - cached.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
     return { value: cached.Id, name: cached.DisplayName };
+  }
+
+  // Pure numeric input → treat as QB Customer ID and fetch directly
+  if (/^\d+$/.test(nameOrId)) {
+    try {
+      const customer = await promisify<unknown>((cb) =>
+        client.getCustomer(nameOrId, cb)
+      ) as { Id: string; DisplayName: string; Active?: boolean };
+      const entry: CachedCustomer = {
+        Id: customer.Id,
+        DisplayName: customer.DisplayName,
+        Active: customer.Active,
+        fetchedAt: Date.now(),
+      };
+      customerCacheById.set(customer.Id, entry);
+      customerCacheByName.set(customer.DisplayName.toLowerCase(), entry);
+      return { value: customer.Id, name: customer.DisplayName };
+    } catch {
+      // Fall through to name lookup — numeric string might still be a DisplayName
+    }
   }
 
   // Query QB for this specific customer — exact DisplayName match first

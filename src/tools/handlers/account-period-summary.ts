@@ -40,6 +40,21 @@ interface PeriodSummary {
   transactionCount: number;
 }
 
+// Debit-normal account types: positive Amount = debit (increase), negative = credit (decrease).
+// Credit-normal account types: positive Amount = credit (increase), negative = debit (decrease).
+// QB's GL "Amount" column uses the account's native sign convention (positive grows the balance),
+// so we must flip the mapping for credit-normal accounts to label debit/credit correctly.
+const DEBIT_NORMAL_TYPES = new Set([
+  "Bank",
+  "Accounts Receivable",
+  "Other Current Asset",
+  "Fixed Asset",
+  "Other Asset",
+  "Cost of Goods Sold",
+  "Expense",
+  "Other Expense",
+]);
+
 /**
  * Parse a GeneralLedger report to extract period summary data.
  *
@@ -47,13 +62,14 @@ interface PeriodSummary {
  *   Section (parent account) → Section (child account) → Data rows
  *
  * Columns: Date, Transaction Type, Num, Name, Memo/Description, Split, Amount, Balance
- * - "Amount" column: negative = debit, positive = credit
+ * - "Amount" column: signed in the account's native sign convention
  * - "Balance" column: running balance (present on transaction rows, not on Summary)
  * - "Beginning Balance" row: Balance column has opening balance
  * - Summary row: Amount column has net activity total; Balance column is empty
  * - Closing balance: Balance column of the last transaction row
  */
-function parseGLReport(report: GLReport): PeriodSummary {
+function parseGLReport(report: GLReport, accountType?: string): PeriodSummary {
+  const isDebitNormal = accountType ? DEBIT_NORMAL_TYPES.has(accountType) : false;
   const columns = report.Columns?.Column ?? [];
 
   const amountIdx = columns.findIndex(c => c.ColTitle === "Amount");
@@ -93,10 +109,13 @@ function parseGLReport(report: GLReport): PeriodSummary {
 
         if (amount !== 0) {
           transactionCount++;
-          if (amount < 0) {
+          // For debit-normal accounts: positive Amount increases balance = debit
+          // For credit-normal accounts: positive Amount increases balance = credit
+          const isDebit = isDebitNormal ? amount > 0 : amount < 0;
+          if (isDebit) {
             totalDebits += Math.abs(amount);
           } else {
-            totalCredits += amount;
+            totalCredits += Math.abs(amount);
           }
         }
 
@@ -115,7 +134,11 @@ function parseGLReport(report: GLReport): PeriodSummary {
     closingBalance = openingBalance;
   }
 
-  const netActivity = totalCredits - totalDebits;
+  // Net Activity = closing − opening. For a debit-normal account that's debits − credits;
+  // for a credit-normal account it's credits − debits. Compute via sign-agnostic side delta.
+  const netActivity = isDebitNormal
+    ? totalDebits - totalCredits
+    : totalCredits - totalDebits;
 
   return {
     openingBalance,
@@ -167,8 +190,8 @@ export async function handleAccountPeriodSummary(
     client.reportGeneralLedgerDetail(options, cb)
   )) as GLReport;
 
-  // Parse the report
-  const summary = parseGLReport(report);
+  // Parse the report (account type determines debit/credit sign convention)
+  const summary = parseGLReport(report, resolvedAccount.AccountType);
 
   // Build summary string
   const formatCurrency = (n: number) => {

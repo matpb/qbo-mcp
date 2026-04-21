@@ -253,6 +253,19 @@ export async function handleGetJournalEntry(
   };
   const qboUrl = `https://app.qbo.intuit.com/app/journal?txnId=${je.Id}`;
 
+  // QB returns TotalAmt=0 for balanced JEs (debits net out credits), so compute from lines.
+  const totalDebitsCents = sumCents(
+    (je.Line || [])
+      .filter(l => l.JournalEntryLineDetail?.PostingType === 'Debit')
+      .map(l => validateAmount(l.Amount))
+  );
+  const totalCreditsCents = sumCents(
+    (je.Line || [])
+      .filter(l => l.JournalEntryLineDetail?.PostingType === 'Credit')
+      .map(l => validateAmount(l.Amount))
+  );
+  const balanced = totalDebitsCents === totalCreditsCents;
+
   // Format summary
   const lines: string[] = [
     'Journal Entry',
@@ -262,7 +275,13 @@ export async function handleGetJournalEntry(
     `Date: ${je.TxnDate}`,
     `Journal no.: ${je.DocNumber || '(none)'}`,
     `Memo: ${je.PrivateNote || '(none)'}`,
-    `Total: $${(je.TotalAmt || 0).toFixed(2)}`,
+    ...(balanced
+      ? [`Total: $${formatDollars(totalDebitsCents)} (debits = credits)`]
+      : [
+          `Total Debits: $${formatDollars(totalDebitsCents)}`,
+          `Total Credits: $${formatDollars(totalCreditsCents)}`,
+          `*** UNBALANCED ***`,
+        ]),
     '',
     'Lines:',
   ];

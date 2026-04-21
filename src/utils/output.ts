@@ -25,10 +25,10 @@ type ToolResult = { content: Array<{ type: string; text: string }> };
  */
 export function outputReport(reportType: string, data: unknown, summary: string): ToolResult {
   if (isHttpMode()) {
+    const raw = "```json\n" + JSON.stringify(data, null, 2) + "\n```";
     return {
       content: [
-        { type: "text", text: summary },
-        { type: "text", text: JSON.stringify(data) },
+        { type: "text", text: `${summary}\n\nRaw data:\n${raw}` },
       ],
     };
   }

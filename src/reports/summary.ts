@@ -26,6 +26,27 @@ export function extractReportSummary(report: QBReport, reportType: string): stri
     lines.push(`Columns: ${colTitles.slice(1).join(", ")}`);
   }
 
+  // Trial Balance: grand totals live in a top-level row with group="GrandTotal"
+  // (QBO shape: { group: "GrandTotal", Summary: { ColData: [ {value:"TOTAL"}, {value:"41271.60"}, {value:"41271.60"} ] } })
+  // Fall back to the last row's Summary if group isn't labeled.
+  if (reportType.includes("Trial Balance")) {
+    const grandTotalRow =
+      rows.find((r) => r.group === "GrandTotal" && r.Summary?.ColData) ??
+      [...rows].reverse().find((r) => r.Summary?.ColData);
+
+    const colData = grandTotalRow?.Summary?.ColData;
+    const totalDebit = parseFloat(colData?.[1]?.value || "0") || 0;
+    const totalCredit = parseFloat(colData?.[2]?.value || "0") || 0;
+
+    const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    lines.push(`Total Debits:  $${fmt(totalDebit)}`);
+    lines.push(`Total Credits: $${fmt(totalCredit)}`);
+    if (Math.abs(totalDebit - totalCredit) > 0.005) {
+      lines.push(`*** UNBALANCED (diff $${fmt(totalDebit - totalCredit)}) ***`);
+    }
+    return lines.join("\n");
+  }
+
   // Extract summaries by group field
   const groupOrder = reportType.includes("Balance")
     ? ["TotalAssets", "TotalLiabilitiesAndEquity"]
