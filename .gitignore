@@ -3,6 +3,7 @@ dist
 dist-lambda
 *.log
 *.mcpb
+qbo-mcp-*.zip
 .DS_Store
 
 # Host-side Docker volume for OAuth tokens — NEVER commit
