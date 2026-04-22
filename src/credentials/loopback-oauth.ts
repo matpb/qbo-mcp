@@ -126,7 +126,11 @@ function escapeHtml(s: string): string {
 function openBrowser(url: string): void {
   try {
     if (process.platform === "win32") {
-      spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" }).unref();
+      // Avoid cmd.exe / `start` — they shell-interpret `&` in query strings and
+      // truncate OAuth URLs at the first &, which makes Intuit reject the
+      // request with "scope query parameter is missing". FileProtocolHandler
+      // passes the URL straight to the registered https handler.
+      spawn("rundll32", ["url.dll,FileProtocolHandler", url], { detached: true, stdio: "ignore" }).unref();
     } else if (process.platform === "darwin") {
       spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
     } else {
