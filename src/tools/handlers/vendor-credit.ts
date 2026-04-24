@@ -73,9 +73,9 @@ const VC_LINE_CHANGE_KEYS = [
 type LineDetail = {
   AccountRef: { value: string; name?: string };
   DepartmentRef?: { value: string; name?: string };
-  CustomerRef?: { value: string; name?: string };
-  ClassRef?: { value: string; name?: string };
-  TaxCodeRef?: { value: string; name?: string };
+  CustomerRef?: { value: string; name?: string } | null;
+  ClassRef?: { value: string; name?: string } | null;
+  TaxCodeRef?: { value: string; name?: string } | null;
   BillableStatus?: BillableStatus;
 };
 
@@ -513,16 +513,18 @@ export async function handleEditVendorCredit(
           const nextAcct = resolveAcct(change.account_name);
           if (nextAcct.value !== detail.AccountRef?.value) { detail.AccountRef = nextAcct; changedKeys.push('account_name'); } else { noopKeys.push('account_name'); }
         }
+        // Ref clears: assign explicit null (not delete). QBO treats missing
+        // nested refs as "keep existing"; only explicit null actually clears.
         const customerInput = change.customer_id ?? change.customer_name;
         if (customerInput === null || customerInput === '') {
-          if (detail.CustomerRef) { delete detail.CustomerRef; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
+          if (detail.CustomerRef != null) { detail.CustomerRef = null; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
         } else if (typeof customerInput === 'string') {
           const nextCust = await resolveCustomer(client, customerInput);
           if (nextCust.value !== detail.CustomerRef?.value) { detail.CustomerRef = nextCust; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
         }
         if (change.class_name !== undefined) {
           if (change.class_name === null || change.class_name === '') {
-            if (detail.ClassRef) { delete detail.ClassRef; changedKeys.push('class'); } else { noopKeys.push('class'); }
+            if (detail.ClassRef != null) { detail.ClassRef = null; changedKeys.push('class'); } else { noopKeys.push('class'); }
           } else {
             const nextClass = await resolveClass(client, change.class_name);
             if (nextClass.value !== detail.ClassRef?.value) { detail.ClassRef = nextClass; changedKeys.push('class'); } else { noopKeys.push('class'); }
@@ -530,7 +532,7 @@ export async function handleEditVendorCredit(
         }
         if (change.tax_code !== undefined) {
           if (change.tax_code === null || change.tax_code === '') {
-            if (detail.TaxCodeRef) { delete detail.TaxCodeRef; changedKeys.push('tax_code'); } else { noopKeys.push('tax_code'); }
+            if (detail.TaxCodeRef != null) { detail.TaxCodeRef = null; changedKeys.push('tax_code'); } else { noopKeys.push('tax_code'); }
           } else {
             const nextTax = await resolveTaxCode(client, change.tax_code);
             if (nextTax.value !== detail.TaxCodeRef?.value) { detail.TaxCodeRef = nextTax; changedKeys.push('tax_code'); } else { noopKeys.push('tax_code'); }

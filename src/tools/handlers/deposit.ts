@@ -66,12 +66,16 @@ interface DepositLine {
   DetailType: string;
   DepositLineDetail?: {
     AccountRef?: { value: string; name?: string };
+    // null is the wire-level signal to clear an existing nested ref on a deposit
+    // line. Omitting these keys leaves the server's stored value untouched.
     Entity?: {
       value: string;
       name?: string;
       type?: string;
-    };
-    ClassRef?: { value: string; name?: string };
+    } | null;
+    ClassRef?: { value: string; name?: string } | null;
+    PaymentMethodRef?: { value: string; name?: string };
+    CheckNum?: string;
   };
 }
 
@@ -498,10 +502,12 @@ export async function handleEditDeposit(
         line.Description = input.description;
       }
 
-      // Apply entity override / clear
+      // Apply entity override / clear. Null-assign (not key delete) — QBO's
+      // deposit line merge preserves fields missing from the payload; only an
+      // explicit null on the wire clears a nested ref.
       const entityInput = input.entity_id ?? input.entity_name;
       if (entityInput === null || entityInput === '') {
-        if (line.DepositLineDetail) delete line.DepositLineDetail.Entity;
+        if (line.DepositLineDetail) line.DepositLineDetail.Entity = null;
       } else if (typeof entityInput === 'string') {
         line.DepositLineDetail = {
           ...line.DepositLineDetail!,
@@ -512,7 +518,7 @@ export async function handleEditDeposit(
       // Apply class override / clear
       if (input.class_name !== undefined) {
         if (input.class_name === null || input.class_name === '') {
-          if (line.DepositLineDetail) delete line.DepositLineDetail.ClassRef;
+          if (line.DepositLineDetail) line.DepositLineDetail.ClassRef = null;
         } else {
           line.DepositLineDetail = {
             ...line.DepositLineDetail!,
@@ -575,7 +581,9 @@ export async function handleEditDeposit(
       previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} \u2192 ${global_tax_calculation}`);
     }
     previewLines.push('');
-    if (global_tax_calculation === undefined) {
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`Tax calc (override): GlobalTaxCalculation \u2192 ${global_tax_calculation}`);
+    } else {
       previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
     }
 

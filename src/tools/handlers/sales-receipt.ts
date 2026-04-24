@@ -308,8 +308,14 @@ export async function handleGetSalesReceipt(
       const qty = detail.Qty ?? 1;
       const unitPrice = detail.UnitPrice ?? line.Amount;
       const acctStr = detail.ItemAccountRef?.name ? ` → ${detail.ItemAccountRef.name}` : '';
+      const tags: string[] = [];
+      if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
+      if (detail.TaxCodeRef?.name || detail.TaxCodeRef?.value) {
+        tags.push(`tax: ${detail.TaxCodeRef.name || detail.TaxCodeRef.value}`);
+      }
+      const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
       const descStr = line.Description ? ` "${line.Description}"` : '';
-      lines.push(`  Line ${line.Id}: ${itemName} (Qty: ${qty} × $${unitPrice.toFixed(2)}) = $${line.Amount.toFixed(2)}${acctStr}${descStr}`);
+      lines.push(`  Line ${line.Id}: ${itemName} (Qty: ${qty} × $${unitPrice.toFixed(2)}) = $${line.Amount.toFixed(2)}${acctStr}${tagStr}${descStr}`);
     } else if (line.DetailType === 'SubTotalLineDetail') {
       lines.push(`  SubTotal: $${line.Amount.toFixed(2)}`);
     }
@@ -456,8 +462,8 @@ export async function handleEditSalesReceipt(
             Qty?: number;
             UnitPrice?: number;
             ItemAccountRef?: { value: string; name?: string };
-            ClassRef?: { value: string; name?: string };
-            TaxCodeRef?: { value: string; name?: string };
+            ClassRef?: { value: string; name?: string } | null;
+            TaxCodeRef?: { value: string; name?: string } | null;
           };
 
           if (change.amount !== undefined) {
@@ -469,16 +475,18 @@ export async function handleEditSalesReceipt(
             }
           }
           if (change.description !== undefined) line.Description = change.description;
+          // Ref clears: assign explicit null. QBO keeps nested refs that are
+          // absent from the payload; null is the signal to actually clear.
           if (change.class_name !== undefined) {
             if (change.class_name === null || change.class_name === '') {
-              delete detail.ClassRef;
+              detail.ClassRef = null;
             } else {
               detail.ClassRef = await resolveClass(client, change.class_name);
             }
           }
           if (change.tax_code !== undefined) {
             if (change.tax_code === null || change.tax_code === '') {
-              delete detail.TaxCodeRef;
+              detail.TaxCodeRef = null;
             } else {
               detail.TaxCodeRef = await resolveTaxCode(client, change.tax_code);
             }
@@ -566,7 +574,9 @@ export async function handleEditSalesReceipt(
       previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} → ${global_tax_calculation}`);
     }
     previewLines.push('');
-    if (global_tax_calculation === undefined) {
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+    } else {
       previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
     }
 
