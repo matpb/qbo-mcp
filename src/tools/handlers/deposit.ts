@@ -502,12 +502,21 @@ export async function handleEditDeposit(
         line.Description = input.description;
       }
 
-      // Apply entity override / clear. Null-assign (not key delete) — QBO's
-      // deposit line merge preserves fields missing from the payload; only an
-      // explicit null on the wire clears a nested ref.
+      // Apply entity override / clear. Deposit line refs are QBO-quirky:
+      // neither key omission nor explicit null actually clears a nested ref
+      // on a deposit line — the server silently preserves the prior value.
+      // Empirically confirmed: sending { value: "0" } is the clear sentinel
+      // QBO honors for deposit line Entity and ClassRef. For bill/expense/
+      // vendor_credit/sales_receipt the opposite holds — { value: "0" } 400s
+      // and null clears cleanly — so this workaround is scoped to deposit
+      // only. (Probe: probe-deposit-entity-clear.mjs)
+      const CLEAR = { value: '0' };
       const entityInput = input.entity_id ?? input.entity_name;
       if (entityInput === null || entityInput === '') {
-        if (line.DepositLineDetail) line.DepositLineDetail.Entity = null;
+        line.DepositLineDetail = {
+          ...line.DepositLineDetail!,
+          Entity: CLEAR as unknown as { value: string; name?: string; type?: string },
+        };
       } else if (typeof entityInput === 'string') {
         line.DepositLineDetail = {
           ...line.DepositLineDetail!,
@@ -518,7 +527,10 @@ export async function handleEditDeposit(
       // Apply class override / clear
       if (input.class_name !== undefined) {
         if (input.class_name === null || input.class_name === '') {
-          if (line.DepositLineDetail) line.DepositLineDetail.ClassRef = null;
+          line.DepositLineDetail = {
+            ...line.DepositLineDetail!,
+            ClassRef: CLEAR,
+          };
         } else {
           line.DepositLineDetail = {
             ...line.DepositLineDetail!,
