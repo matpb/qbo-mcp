@@ -12,9 +12,13 @@ export {
   getDepartmentCache,
   getAccountCache,
   getVendorCache,
+  getClassCache,
+  getTaxCodeCache,
   resolveAccount,
   resolveVendor,
   resolveItem,
   resolveCustomer,
+  resolveClass,
+  resolveTaxCode,
   resolveDepartmentId,
 } from './cache.js';

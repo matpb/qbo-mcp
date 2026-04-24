@@ -8,7 +8,7 @@ import {
   resolveItem,
   resolveCustomer,
 } from "../../client/index.js";
-import { validateAmount, toDollars, formatDollars, sumCents, outputReport } from "../../utils/index.js";
+import { validateAmount, toDollars, formatDollars, sumCents, outputReport, assertKnownKeys } from "../../utils/index.js";
 
 interface InvoiceLineChange {
   line_id?: string;
@@ -30,6 +30,27 @@ interface CreateInvoiceLine {
   description?: string;
 }
 
+const CREATE_INVOICE_KEYS = [
+  'txn_date', 'customer_name', 'customer_id', 'due_date',
+  'department_name', 'department_id', 'memo', 'customer_memo', 'bill_email',
+  'sales_term_ref', 'allow_online_credit_card_payment', 'allow_online_ach_payment',
+  'doc_number', 'lines', 'draft',
+] as const;
+
+const EDIT_INVOICE_KEYS = [
+  'id', 'txn_date', 'due_date', 'memo', 'customer_memo', 'bill_email',
+  'sales_term_ref', 'allow_online_credit_card_payment', 'allow_online_ach_payment',
+  'customer_name', 'department_name', 'doc_number', 'lines', 'draft',
+] as const;
+
+const CREATE_INVOICE_LINE_KEYS = [
+  'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description',
+] as const;
+
+const INVOICE_LINE_CHANGE_KEYS = [
+  'line_id', 'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description', 'delete',
+] as const;
+
 export async function handleCreateInvoice(
   client: QuickBooks,
   args: {
@@ -50,6 +71,7 @@ export async function handleCreateInvoice(
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, CREATE_INVOICE_KEYS, 'create_invoice');
   const {
     txn_date, customer_name, customer_id,
     due_date, department_name, department_id,
@@ -61,6 +83,9 @@ export async function handleCreateInvoice(
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
   }
+  lines.forEach((line, idx) =>
+    assertKnownKeys(line as unknown as Record<string, unknown>, CREATE_INVOICE_LINE_KEYS, `create_invoice.lines[${idx}]`)
+  );
 
   // Resolve customer (required for invoices)
   if (!customer_id && !customer_name) {
@@ -342,18 +367,26 @@ export async function handleEditInvoice(
     allow_online_credit_card_payment?: boolean;
     allow_online_ach_payment?: boolean;
     customer_name?: string;
-    department_name?: string;
+    department_name?: string | null;
+    doc_number?: string;
     lines?: InvoiceLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, EDIT_INVOICE_KEYS, 'edit_invoice');
   const {
     id, txn_date, due_date, memo, customer_memo, bill_email,
     sales_term_ref, allow_online_credit_card_payment, allow_online_ach_payment,
-    customer_name, department_name, lines: lineChanges, draft = true,
+    customer_name, department_name, doc_number, lines: lineChanges, draft = true,
   } = args;
 
-  // Fetch current Invoice
+  if (lineChanges) {
+    lineChanges.forEach((change, idx) =>
+      assertKnownKeys(change as unknown as Record<string, unknown>, INVOICE_LINE_CHANGE_KEYS, `edit_invoice.lines[${idx}]`)
+    );
+  }
+
+  // Fetch current Invoice (include tax-related header fields)
   const current = await promisify<unknown>((cb) =>
     client.getInvoice(id, cb)
   ) as {
@@ -363,6 +396,8 @@ export async function handleEditInvoice(
     DueDate?: string;
     DocNumber?: string;
     PrivateNote?: string;
+    GlobalTaxCalculation?: string;
+    TxnTaxDetail?: Record<string, unknown>;
     CustomerRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
     CustomerMemo?: { value?: string };
@@ -386,8 +421,9 @@ export async function handleEditInvoice(
     }>;
   };
 
-  // Determine if we're modifying lines - requires full update (not sparse)
-  const needsFullUpdate = lineChanges && lineChanges.length > 0;
+  const wantsClearDept = department_name === null;
+  const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
+  const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept;
 
   // Build updated Invoice
   const updated: Record<string, unknown> = {
@@ -398,26 +434,19 @@ export async function handleEditInvoice(
   if (!needsFullUpdate) {
     updated.sparse = true;
   } else {
+    // Full update: preserve every header field — anything omitted is reset server-side.
     updated.sparse = false;
     updated.TxnDate = current.TxnDate;
     updated.DueDate = current.DueDate;
     updated.DocNumber = current.DocNumber;
     updated.PrivateNote = current.PrivateNote;
-    if (current.CustomerRef) {
-      updated.CustomerRef = current.CustomerRef;
-    }
-    if (current.DepartmentRef) {
-      updated.DepartmentRef = current.DepartmentRef;
-    }
-    if (current.CustomerMemo) {
-      updated.CustomerMemo = current.CustomerMemo;
-    }
-    if (current.BillEmail) {
-      updated.BillEmail = current.BillEmail;
-    }
-    if (current.SalesTermRef) {
-      updated.SalesTermRef = current.SalesTermRef;
-    }
+    if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
+    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.CustomerRef) updated.CustomerRef = current.CustomerRef;
+    if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
+    if (current.CustomerMemo) updated.CustomerMemo = current.CustomerMemo;
+    if (current.BillEmail) updated.BillEmail = current.BillEmail;
+    if (current.SalesTermRef) updated.SalesTermRef = current.SalesTermRef;
     if (current.AllowOnlineCreditCardPayment !== undefined) {
       updated.AllowOnlineCreditCardPayment = current.AllowOnlineCreditCardPayment;
     }
@@ -430,6 +459,8 @@ export async function handleEditInvoice(
       return rest;
     });
   }
+
+  if (doc_number !== undefined) updated.DocNumber = doc_number;
 
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (due_date !== undefined) updated.DueDate = due_date;
@@ -463,11 +494,11 @@ export async function handleEditInvoice(
   }
 
   // Resolve header-level department if provided
-  if (department_name !== undefined) {
+  if (wantsSetDept) {
     const deptCache = await getDepartmentCache(client);
-    let match = deptCache.byName.get(department_name.toLowerCase());
+    let match = deptCache.byName.get(department_name!.toLowerCase());
     if (!match) match = deptCache.items.find(d =>
-      d.FullyQualifiedName?.toLowerCase().includes(department_name.toLowerCase())
+      d.FullyQualifiedName?.toLowerCase().includes(department_name!.toLowerCase())
     );
     if (!match) throw new Error(`Department not found: "${department_name}"`);
     updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
@@ -578,10 +609,14 @@ export async function handleEditInvoice(
       const newCust = (updated.CustomerRef as { name?: string })?.name || customer_name;
       previewLines.push(`  Customer: ${current.CustomerRef?.name || '(none)'} → ${newCust}`);
     }
-    if (department_name !== undefined) {
+    if (wantsSetDept) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
     }
+    if (wantsClearDept) previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → (cleared)`);
+    if (doc_number !== undefined) previewLines.push(`  Ref no.: ${current.DocNumber || '(none)'} → ${doc_number}`);
+    previewLines.push('');
+    previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
 
     if (updated.Line) {
       previewLines.push('');

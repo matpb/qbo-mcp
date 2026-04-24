@@ -7,8 +7,26 @@ import {
   getDepartmentCache,
   getVendorCache,
 } from "../../client/index.js";
-import { validateAmount, toDollars, formatDollars, toCents, sumCents, outputReport } from "../../utils/index.js";
+import { validateAmount, toDollars, formatDollars, toCents, sumCents, outputReport, assertKnownKeys } from "../../utils/index.js";
 import type { AccountCache, DepartmentCache, VendorCache } from "../../types/index.js";
+
+const CREATE_DEPOSIT_KEYS = [
+  'deposit_to_account', 'txn_date', 'lines',
+  'department_name', 'department_id', 'memo', 'draft',
+] as const;
+
+const EDIT_DEPOSIT_KEYS = [
+  'id', 'txn_date', 'memo', 'deposit_to_account', 'department_name',
+  'lines', 'draft', 'expected_total',
+] as const;
+
+const CREATE_DEPOSIT_LINE_KEYS = [
+  'amount', 'account_name', 'account_id', 'description', 'entity_name', 'entity_id',
+] as const;
+
+const EDIT_DEPOSIT_LINE_KEYS = [
+  'line_id', 'amount', 'account_name', 'description',
+] as const;
 
 // --- Interfaces ---
 
@@ -119,6 +137,7 @@ export async function handleCreateDeposit(
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, CREATE_DEPOSIT_KEYS, 'create_deposit');
   const {
     deposit_to_account, txn_date, lines,
     department_name, department_id, memo, draft = true,
@@ -127,6 +146,9 @@ export async function handleCreateDeposit(
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
   }
+  lines.forEach((line, idx) =>
+    assertKnownKeys(line as unknown as Record<string, unknown>, CREATE_DEPOSIT_LINE_KEYS, `create_deposit.lines[${idx}]`)
+  );
 
   // Parallel cache fetch
   const [acctCache, deptCache, vendorCacheData] = await Promise.all([
@@ -311,21 +333,31 @@ export async function handleEditDeposit(
     txn_date?: string;
     memo?: string;
     deposit_to_account?: string;
-    department_name?: string;
+    department_name?: string | null;
     lines?: DepositLineInput[];
     draft?: boolean;
     expected_total?: number;  // For fixing corrupted deposits - bypasses validation
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, EDIT_DEPOSIT_KEYS, 'edit_deposit');
   const { id, txn_date, memo, deposit_to_account, department_name, lines: newLines, draft = true, expected_total } = args;
+
+  if (newLines) {
+    newLines.forEach((line, idx) =>
+      assertKnownKeys(line as unknown as Record<string, unknown>, EDIT_DEPOSIT_LINE_KEYS, `edit_deposit.lines[${idx}]`)
+    );
+  }
+
+  const wantsClearDept = department_name === null;
+  const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
 
   // Fetch current Deposit
   const current = await promisify<unknown>((cb) =>
     client.getDeposit(id, cb)
-  ) as Deposit;
+  ) as Deposit & { GlobalTaxCalculation?: string; TxnTaxDetail?: Record<string, unknown> };
 
-  // Determine if we're replacing lines - requires full update (not sparse)
-  const needsFullUpdate = newLines && newLines.length > 0;
+  // Clearing a header ref requires full update
+  const needsFullUpdate = (newLines && newLines.length > 0) || wantsClearDept;
 
   // Build updated Deposit
   let updated: Record<string, unknown>;
@@ -343,8 +375,7 @@ export async function handleEditDeposit(
       updated.DepositToAccountRef = current.DepositToAccountRef;
     }
   } else {
-    // Full update: explicitly set sparse=false and copy only needed fields
-    // (same pattern as journal-entry.ts which works for line deletion)
+    // Full update: preserve every header field — anything omitted is reset server-side.
     updated = {
       Id: current.Id,
       SyncToken: current.SyncToken,
@@ -352,12 +383,10 @@ export async function handleEditDeposit(
       TxnDate: current.TxnDate,
       PrivateNote: current.PrivateNote,
     };
-    if (current.DepositToAccountRef) {
-      updated.DepositToAccountRef = current.DepositToAccountRef;
-    }
-    if (current.DepartmentRef) {
-      updated.DepartmentRef = current.DepartmentRef;
-    }
+    if (current.DepositToAccountRef) updated.DepositToAccountRef = current.DepositToAccountRef;
+    if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
+    if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
+    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
     if ((current as unknown as Record<string, unknown>).CurrencyRef) {
       updated.CurrencyRef = (current as unknown as Record<string, unknown>).CurrencyRef;
     }
@@ -373,7 +402,7 @@ export async function handleEditDeposit(
 
   // Fetch caches when needed for header-level resolution or line processing
   const needsAcctCache = deposit_to_account !== undefined || (newLines && newLines.length > 0);
-  const needsDeptCache = department_name !== undefined;
+  const needsDeptCache = wantsSetDept;
 
   const [acctCache, deptCache] = await Promise.all([
     needsAcctCache ? getAccountCache(client) : Promise.resolve(null),
@@ -386,9 +415,9 @@ export async function handleEditDeposit(
     updated.DepositToAccountRef = ref;
   }
 
-  // Resolve header-level department if provided
-  if (department_name !== undefined) {
-    const ref = resolveDepartmentRef(deptCache!, department_name);
+  // Resolve header-level department if provided (null = clear, handled by full-update branch)
+  if (wantsSetDept) {
+    const ref = resolveDepartmentRef(deptCache!, department_name!);
     updated.DepartmentRef = ref;
   }
 
@@ -484,10 +513,15 @@ export async function handleEditDeposit(
       const newAcct = (updated.DepositToAccountRef as { name?: string })?.name || deposit_to_account;
       previewLines.push(`  Deposit To: ${current.DepositToAccountRef?.name || '(default)'} \u2192 ${newAcct}`);
     }
-    if (department_name !== undefined) {
+    if (wantsSetDept) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} \u2192 ${newDept}`);
     }
+    if (wantsClearDept) {
+      previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} \u2192 (cleared)`);
+    }
+    previewLines.push('');
+    previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
 
     if (updated.Line) {
       previewLines.push('');

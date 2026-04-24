@@ -199,9 +199,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_journal_entry",
-    description: "Create a journal entry. Accepts account/department names (will lookup IDs automatically). Validates debits=credits before creating. Returns entry details and a link to view in QuickBooks.",
+    description: "Create a journal entry. Accepts account/department names (will lookup IDs automatically). Validates debits=credits before creating. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         txn_date: {
           type: "string",
@@ -216,6 +217,7 @@ export const toolDefinitions = [
           description: "Array of line items. Provide account_name OR account_id (name preferred). Optionally provide department_name OR department_id.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               account_name: {
                 type: "string",
@@ -278,9 +280,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_journal_entry",
-    description: "Modify an existing journal entry. Can update date, memo, doc_number, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line, set delete=true to remove a line. Validates debits=credits before saving.",
+    description: "Modify an existing journal entry. Can update date, memo, doc_number, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line, set delete=true to remove a line. Validates debits=credits before saving. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -303,6 +306,7 @@ export const toolDefinitions = [
           description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -346,9 +350,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_bill",
-    description: "Create a vendor bill. Accepts vendor/account/department names (will lookup IDs automatically). Note: DepartmentRef is header-level only — for multi-department splits, create separate bills (one per department). Returns bill details and a link to view in QuickBooks.",
+    description: "Create a vendor bill. Accepts vendor/account/department names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Note: DepartmentRef is header-level only. Unknown parameters are rejected. Returns bill details and a link to view in QuickBooks.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         vendor_name: {
           type: "string",
@@ -391,6 +396,7 @@ export const toolDefinitions = [
           description: "Array of expense line items. Provide account_name OR account_id (name preferred).",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               account_name: {
                 type: "string",
@@ -407,6 +413,27 @@ export const toolDefinitions = [
               description: {
                 type: "string",
                 description: "Line description (optional)",
+              },
+              customer_name: {
+                type: "string",
+                description: "Customer/sub-customer/job name to assign to this line (auto-resolved to ID).",
+              },
+              customer_id: {
+                type: "string",
+                description: "Customer ID to assign to this line.",
+              },
+              class_name: {
+                type: "string",
+                description: "Class name (for companies that track classes). Auto-resolved to ID.",
+              },
+              tax_code: {
+                type: "string",
+                description: "Tax code name or ID (e.g., 'TAX', 'NON', Canadian/international codes).",
+              },
+              billable_status: {
+                type: "string",
+                enum: ["Billable", "NotBillable", "HasBeenBilled"],
+                description: "Whether the line is billable to the customer. Requires customer_name. Defaults to 'NotBillable'.",
               },
             },
             required: ["amount"],
@@ -436,9 +463,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_bill",
-    description: "Modify an existing bill. Can update vendor, date, due date, memo, and/or lines. For lines: provide line_id to update existing line, omit to add new line, set delete=true to remove. Note: DepartmentRef is header-level only — lines do not support department.",
+    description: "Modify an existing bill. Can update vendor, date, due date, memo, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. For lines: provide line_id to update existing line, omit to add new, set delete=true to remove. To clear a line's customer/class/tax code, pass null or empty string. To clear header DepartmentRef, pass department_name: null. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -461,8 +489,8 @@ export const toolDefinitions = [
           description: "New private memo (optional)",
         },
         department_name: {
-          type: "string",
-          description: "Header-level department/location name (auto-resolved to ID)",
+          type: ["string", "null"],
+          description: "Header-level department/location name (auto-resolved to ID). Pass null to clear.",
         },
         doc_number: {
           type: "string",
@@ -473,6 +501,7 @@ export const toolDefinitions = [
           description: "Line modifications. Provide line_id to update existing, omit to add new.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -489,6 +518,27 @@ export const toolDefinitions = [
               description: {
                 type: "string",
                 description: "Line description",
+              },
+              customer_name: {
+                type: ["string", "null"],
+                description: "Customer/sub-customer/job name to assign to this line (auto-resolved to ID). Pass null or \"\" to clear.",
+              },
+              customer_id: {
+                type: ["string", "null"],
+                description: "Customer ID to assign to this line. Pass null to clear.",
+              },
+              class_name: {
+                type: ["string", "null"],
+                description: "Class name (for companies that track classes). Auto-resolved to ID. Pass null to clear.",
+              },
+              tax_code: {
+                type: ["string", "null"],
+                description: "Tax code name or ID (e.g., 'TAX', 'NON', Canadian/international codes). Pass null to clear.",
+              },
+              billable_status: {
+                type: "string",
+                enum: ["Billable", "NotBillable", "HasBeenBilled"],
+                description: "Whether the line is billable to the customer. Requires customer_name. 'Billable' needs Preferences > Expenses > Track billable expenses enabled.",
               },
               delete: {
                 type: "boolean",
@@ -521,9 +571,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_expense",
-    description: "Modify an existing expense (Purchase). Can update date, memo, payment account, and/or lines. Note: PaymentType (Cash/Check/CreditCard) cannot be changed after creation.",
+    description: "Modify an existing expense (Purchase). Can update date, memo, payment account, payee, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. Note: PaymentType (Cash/Check/CreditCard) cannot be changed after creation. vendor_name/vendor_id are accepted as aliases for entity_name/entity_id (the same QBO 'Payee' / Canadian 'Supplier' field). Pass null on department_name / entity_name / vendor_name to clear those header references. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -541,11 +592,16 @@ export const toolDefinitions = [
           type: "string",
           description: "New payment account name/number (Bank or Credit Card account)",
         },
+        doc_number: {
+          type: "string",
+          description: "Reference number for the expense (optional)",
+        },
         lines: {
           type: "array",
           description: "Line modifications. Provide line_id to update existing, omit to add new.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -563,6 +619,27 @@ export const toolDefinitions = [
                 type: "string",
                 description: "Line description",
               },
+              customer_name: {
+                type: ["string", "null"],
+                description: "Customer/sub-customer/job name for this line. Pass null or \"\" to clear.",
+              },
+              customer_id: {
+                type: ["string", "null"],
+                description: "Customer ID for this line. Pass null to clear.",
+              },
+              class_name: {
+                type: ["string", "null"],
+                description: "Class name (auto-resolved to ID). Pass null to clear.",
+              },
+              tax_code: {
+                type: ["string", "null"],
+                description: "Tax code name or ID (e.g., 'TAX', 'NON', Canadian GST codes). Pass null to clear.",
+              },
+              billable_status: {
+                type: "string",
+                enum: ["Billable", "NotBillable", "HasBeenBilled"],
+                description: "Whether the line is billable. Requires customer_name.",
+              },
               delete: {
                 type: "boolean",
                 description: "Set true to remove this line (requires line_id)",
@@ -571,16 +648,24 @@ export const toolDefinitions = [
           },
         },
         department_name: {
-          type: "string",
-          description: "Header-level department/location name (auto-resolved to ID)",
+          type: ["string", "null"],
+          description: "Header-level department/location name (auto-resolved to ID). Pass null to clear.",
         },
         entity_name: {
-          type: "string",
-          description: "Payee/vendor display name (e.g., 'Cozzini Bros., Inc.'). Will be looked up to get ID.",
+          type: ["string", "null"],
+          description: "Payee/vendor display name (QBO 'Payee' = Canadian 'Supplier'). Pass null to clear.",
         },
         entity_id: {
-          type: "string",
-          description: "Payee/vendor ID (use if you already know it, otherwise use entity_name)",
+          type: ["string", "null"],
+          description: "Payee/vendor ID. Pass null to clear.",
+        },
+        vendor_name: {
+          type: ["string", "null"],
+          description: "Alias for entity_name. Accepted for consistency with edit_bill.",
+        },
+        vendor_id: {
+          type: ["string", "null"],
+          description: "Alias for entity_id.",
         },
         draft: {
           type: "boolean",
@@ -592,9 +677,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_expense",
-    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Covers Cash, Check, and Credit Card payment types. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Returns expense details and a link to view in QuickBooks.",
+    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Covers Cash, Check, and Credit Card payment types. vendor_name/vendor_id accepted as aliases for entity_name/entity_id. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         payment_type: {
           type: "string",
@@ -617,6 +703,14 @@ export const toolDefinitions = [
           type: "string",
           description: "Payee/vendor ID (use if you already know it, otherwise use entity_name)",
         },
+        vendor_name: {
+          type: "string",
+          description: "Alias for entity_name.",
+        },
+        vendor_id: {
+          type: "string",
+          description: "Alias for entity_id.",
+        },
         department_name: {
           type: "string",
           description: "Header-level department/location name (e.g., '20358', 'Cotati'). Will be looked up to get ID.",
@@ -638,6 +732,7 @@ export const toolDefinitions = [
           description: "Array of expense line items. Provide account_name OR account_id (name preferred).",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               account_name: {
                 type: "string",
@@ -654,6 +749,27 @@ export const toolDefinitions = [
               description: {
                 type: "string",
                 description: "Line description (optional)",
+              },
+              customer_name: {
+                type: "string",
+                description: "Customer/sub-customer/job name for this line (auto-resolved to ID).",
+              },
+              customer_id: {
+                type: "string",
+                description: "Customer ID for this line.",
+              },
+              class_name: {
+                type: "string",
+                description: "Class name (auto-resolved to ID).",
+              },
+              tax_code: {
+                type: "string",
+                description: "Tax code name or ID (e.g., 'TAX', 'NON', Canadian GST codes).",
+              },
+              billable_status: {
+                type: "string",
+                enum: ["Billable", "NotBillable", "HasBeenBilled"],
+                description: "Whether the line is billable. Requires customer_name.",
               },
             },
             required: ["amount"],
@@ -683,9 +799,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_sales_receipt",
-    description: "Modify an existing sales receipt. Can update date, memo, deposit account, department, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove.",
+    description: "Modify an existing sales receipt. Can update date, memo, deposit account, department, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -704,14 +821,15 @@ export const toolDefinitions = [
           description: "New deposit account name/number (Bank account)",
         },
         department_name: {
-          type: "string",
-          description: "Header-level department/location name (auto-resolved to ID)",
+          type: ["string", "null"],
+          description: "Header-level department/location name (auto-resolved to ID). Pass null to clear.",
         },
         lines: {
           type: "array",
           description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -758,9 +876,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_sales_receipt",
-    description: "Create a sales receipt. Accepts item/customer/department names (will lookup IDs automatically). Lines reference items (products/services) not accounts. Returns receipt details and a link to view in QuickBooks.",
+    description: "Create a sales receipt. Accepts item/customer/department names (will lookup IDs automatically). Lines reference items (products/services) not accounts. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         txn_date: {
           type: "string",
@@ -799,6 +918,7 @@ export const toolDefinitions = [
           description: "Array of line items. Each line references an item (product/service). Provide item_name OR item_id (name preferred).",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               item_name: {
                 type: "string",
@@ -838,9 +958,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_invoice",
-    description: "Create an invoice. Accepts item/customer/department names (will lookup IDs automatically). Either customer_name or customer_id is REQUIRED — invoices must have a customer. Lines use SalesItemLineDetail (product/service references, not accounts). Returns invoice details and a link to view in QuickBooks.",
+    description: "Create an invoice. Accepts item/customer/department names (will lookup IDs automatically). Either customer_name or customer_id is REQUIRED — invoices must have a customer. Lines use SalesItemLineDetail. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         txn_date: {
           type: "string",
@@ -899,6 +1020,7 @@ export const toolDefinitions = [
           description: "Array of line items. Each line references an item (product/service). Provide item_name OR item_id (name preferred).",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               item_name: {
                 type: "string",
@@ -952,9 +1074,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_invoice",
-    description: "Modify an existing invoice. Can update date, due date, memo, customer, department, terms, email, online payment settings, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove.",
+    description: "Modify an existing invoice. Can update date, due date, memo, customer, department, terms, email, online payment settings, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -997,14 +1120,19 @@ export const toolDefinitions = [
           description: "New customer display name (auto-resolved to ID)",
         },
         department_name: {
+          type: ["string", "null"],
+          description: "Header-level department/location name (auto-resolved to ID). Pass null to clear.",
+        },
+        doc_number: {
           type: "string",
-          description: "Header-level department/location name (auto-resolved to ID)",
+          description: "Reference number for the invoice (optional)",
         },
         lines: {
           type: "array",
           description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -1051,9 +1179,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_deposit",
-    description: "Create a bank deposit. Accepts account/department/vendor names (will lookup IDs automatically). Lines represent the sources of the deposit — amounts can be positive (income) or negative (fees, deductions). QuickBooks computes the total from line amounts. Returns deposit details and a link to view in QuickBooks.",
+    description: "Create a bank deposit. Accepts account/department/vendor names (will lookup IDs automatically). Lines represent the sources of the deposit — amounts can be positive (income) or negative (fees, deductions). QuickBooks computes the total from line amounts. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         deposit_to_account: {
           type: "string",
@@ -1068,6 +1197,7 @@ export const toolDefinitions = [
           description: "Array of deposit line items. Each line represents a source of the deposit. Amounts can be positive or negative.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               amount: {
                 type: "number",
@@ -1133,9 +1263,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_deposit",
-    description: "Modify an existing deposit. Can update date, memo, deposit account, department, and/or lines. CRITICAL for line changes: The QB Deposit API does NOT replace lines - it merges them. Lines WITH line_id update existing lines. Lines WITHOUT line_id are ADDED as new. Lines NOT included are KEPT unchanged. To 'delete' a line, you must include ALL existing lines with their line_ids and set unwanted lines to amount: 0. Line amounts must sum to the original deposit total (use expected_total to override for corrupted deposits).",
+    description: "Modify an existing deposit. Can update date, memo, deposit account, department, and/or lines. Pass department_name: null to clear header department. Unknown parameters are rejected. CRITICAL for line changes: If you provide any lines, ALL existing lines must be included (the QB Deposit API does NOT replace lines — lines without line_id are ADDED, lines not included are KEPT). To 'delete' a line, set its amount to 0. Line amounts must sum to the original deposit total (use expected_total to override for corrupted deposits).",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -1154,14 +1285,15 @@ export const toolDefinitions = [
           description: "New deposit account name/number (Bank account)",
         },
         department_name: {
-          type: "string",
-          description: "Header-level department/location name (auto-resolved to ID)",
+          type: ["string", "null"],
+          description: "Header-level department/location name (auto-resolved to ID). Pass null to clear.",
         },
         lines: {
           type: "array",
           description: "IMPORTANT: You MUST include ALL existing lines with their line_ids. Lines without line_id are ADDED (not replaced). Lines not included are KEPT (not deleted). To 'delete' a line, set its amount to 0. Line amounts must sum to original deposit total.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -1197,9 +1329,10 @@ export const toolDefinitions = [
   },
   {
     name: "create_vendor_credit",
-    description: "Create a vendor credit. Accepts vendor/account/department names (will lookup IDs automatically). Lines represent credit amounts applied to expense accounts. Returns credit details and a link to view in QuickBooks.",
+    description: "Create a vendor credit. Accepts vendor/account/department names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         vendor_name: {
           type: "string",
@@ -1238,6 +1371,7 @@ export const toolDefinitions = [
           description: "Array of line items. Each line credits an expense account.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               amount: {
                 type: "number",
@@ -1254,6 +1388,27 @@ export const toolDefinitions = [
               description: {
                 type: "string",
                 description: "Line description (optional)",
+              },
+              customer_name: {
+                type: "string",
+                description: "Customer/sub-customer/job name for this line (auto-resolved to ID).",
+              },
+              customer_id: {
+                type: "string",
+                description: "Customer ID for this line.",
+              },
+              class_name: {
+                type: "string",
+                description: "Class name (auto-resolved to ID).",
+              },
+              tax_code: {
+                type: "string",
+                description: "Tax code name or ID.",
+              },
+              billable_status: {
+                type: "string",
+                enum: ["Billable", "NotBillable", "HasBeenBilled"],
+                description: "Whether the line is billable. Requires customer_name. Defaults to 'NotBillable'.",
               },
             },
             required: ["amount"],
@@ -1283,9 +1438,10 @@ export const toolDefinitions = [
   },
   {
     name: "edit_vendor_credit",
-    description: "Modify an existing vendor credit. Can update vendor, date, memo, ref number, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires amount and account_name), set delete=true to remove. Note: DepartmentRef is header-level only — lines do not support department.",
+    description: "Modify an existing vendor credit. Can update vendor, date, memo, ref number, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. For lines: provide line_id to update existing line, omit line_id to add new line (requires amount and account_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
+      additionalProperties: false,
       properties: {
         id: {
           type: "string",
@@ -1303,6 +1459,10 @@ export const toolDefinitions = [
           type: "string",
           description: "New private memo (optional)",
         },
+        department_name: {
+          type: ["string", "null"],
+          description: "Header-level department/location name (auto-resolved to ID). Pass null to clear.",
+        },
         doc_number: {
           type: "string",
           description: "New reference number (optional)",
@@ -1312,6 +1472,7 @@ export const toolDefinitions = [
           description: "Line modifications. Provide line_id to update existing line, omit to add new line.",
           items: {
             type: "object",
+            additionalProperties: false,
             properties: {
               line_id: {
                 type: "string",
@@ -1328,6 +1489,27 @@ export const toolDefinitions = [
               description: {
                 type: "string",
                 description: "Line description",
+              },
+              customer_name: {
+                type: ["string", "null"],
+                description: "Customer/sub-customer/job name for this line. Pass null or \"\" to clear.",
+              },
+              customer_id: {
+                type: ["string", "null"],
+                description: "Customer ID for this line. Pass null to clear.",
+              },
+              class_name: {
+                type: ["string", "null"],
+                description: "Class name (auto-resolved to ID). Pass null to clear.",
+              },
+              tax_code: {
+                type: ["string", "null"],
+                description: "Tax code name or ID. Pass null to clear.",
+              },
+              billable_status: {
+                type: "string",
+                enum: ["Billable", "NotBillable", "HasBeenBilled"],
+                description: "Whether the line is billable. Requires customer_name.",
               },
               delete: {
                 type: "boolean",

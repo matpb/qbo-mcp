@@ -4,12 +4,16 @@ import QuickBooks from "node-quickbooks";
 import { promisify } from "./promisify.js";
 import {
   CachedAccount,
+  CachedClass,
   CachedCustomer,
   CachedDepartment,
+  CachedTaxCode,
   CachedVendor,
   CachedItem,
   AccountCache,
+  ClassCache,
   DepartmentCache,
+  TaxCodeCache,
   VendorCache,
   QBQueryResponse,
 } from "../types/index.js";
@@ -21,6 +25,8 @@ const LOOKUP_CACHE_TTL_MS = 15 * 60 * 1000;
 let departmentCache: DepartmentCache | null = null;
 let accountCache: AccountCache | null = null;
 let vendorCache: VendorCache | null = null;
+let classCache: ClassCache | null = null;
+let taxCodeCache: TaxCodeCache | null = null;
 // Item cache: lazy per-entry lookup (not bulk-loaded like others)
 const itemCacheById = new Map<string, CachedItem>();
 const itemCacheByName = new Map<string, CachedItem>(); // lowercase key
@@ -32,6 +38,8 @@ export function clearLookupCache(): void {
   departmentCache = null;
   accountCache = null;
   vendorCache = null;
+  classCache = null;
+  taxCodeCache = null;
   itemCacheById.clear();
   itemCacheByName.clear();
   customerCacheById.clear();
@@ -315,4 +323,88 @@ export async function resolveCustomer(client: QuickBooks, nameOrId: string): Pro
   customerCacheByName.set(customer.DisplayName.toLowerCase(), entry);
 
   return { value: customer.Id, name: customer.DisplayName };
+}
+
+export async function getClassCache(client: QuickBooks): Promise<ClassCache> {
+  if (classCache && (Date.now() - classCache.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return classCache;
+  }
+
+  const result = await promisify<unknown>((cb) => client.findClasses({ fetchAll: true }, cb));
+  const items = extractQueryResults<CachedClass>(result, 'Class');
+
+  const byId = new Map<string, CachedClass>();
+  const byName = new Map<string, CachedClass>();
+  const byFqName = new Map<string, CachedClass>();
+  for (const cls of items) {
+    byId.set(cls.Id, cls);
+    byName.set(cls.Name.toLowerCase(), cls);
+    if (cls.FullyQualifiedName) {
+      byFqName.set(cls.FullyQualifiedName.toLowerCase(), cls);
+    }
+  }
+
+  classCache = { items, byId, byName, byFqName, fetchedAt: Date.now() };
+  return classCache;
+}
+
+export async function resolveClass(client: QuickBooks, nameOrId: string): Promise<{ value: string; name: string }> {
+  const cache = await getClassCache(client);
+
+  const byId = cache.byId.get(nameOrId);
+  if (byId) return { value: byId.Id, name: byId.FullyQualifiedName || byId.Name };
+
+  const byFq = cache.byFqName.get(nameOrId.toLowerCase());
+  if (byFq) return { value: byFq.Id, name: byFq.FullyQualifiedName || byFq.Name };
+
+  const byName = cache.byName.get(nameOrId.toLowerCase());
+  if (byName) return { value: byName.Id, name: byName.FullyQualifiedName || byName.Name };
+
+  const byPartial = cache.items.find(c =>
+    c.FullyQualifiedName?.toLowerCase().includes(nameOrId.toLowerCase())
+  );
+  if (byPartial) return { value: byPartial.Id, name: byPartial.FullyQualifiedName || byPartial.Name };
+
+  throw new Error(`Class not found: "${nameOrId}". Try using class name or ID.`);
+}
+
+export async function getTaxCodeCache(client: QuickBooks): Promise<TaxCodeCache> {
+  if (taxCodeCache && (Date.now() - taxCodeCache.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return taxCodeCache;
+  }
+
+  const result = await promisify<unknown>((cb) => client.findTaxCodes({ fetchAll: true }, cb));
+  const items = extractQueryResults<CachedTaxCode>(result, 'TaxCode');
+
+  const byId = new Map<string, CachedTaxCode>();
+  const byName = new Map<string, CachedTaxCode>();
+  for (const tc of items) {
+    byId.set(tc.Id, tc);
+    byName.set(tc.Name.toLowerCase(), tc);
+  }
+
+  taxCodeCache = { items, byId, byName, fetchedAt: Date.now() };
+  return taxCodeCache;
+}
+
+// Resolve tax code by name or ID. QBO also accepts special literal IDs "TAX" and
+// "NON" for US companies; we pass those through without cache lookup.
+export async function resolveTaxCode(client: QuickBooks, nameOrId: string): Promise<{ value: string; name: string }> {
+  const upper = nameOrId.toUpperCase();
+  if (upper === 'TAX' || upper === 'NON') {
+    return { value: upper, name: upper };
+  }
+
+  const cache = await getTaxCodeCache(client);
+
+  const byId = cache.byId.get(nameOrId);
+  if (byId) return { value: byId.Id, name: byId.Name };
+
+  const byName = cache.byName.get(nameOrId.toLowerCase());
+  if (byName) return { value: byName.Id, name: byName.Name };
+
+  const byPartial = cache.items.find(t => t.Name.toLowerCase().includes(nameOrId.toLowerCase()));
+  if (byPartial) return { value: byPartial.Id, name: byPartial.Name };
+
+  throw new Error(`Tax code not found: "${nameOrId}". Try using the exact tax code name or ID.`);
 }

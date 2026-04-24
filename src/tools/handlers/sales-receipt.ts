@@ -8,7 +8,7 @@ import {
   resolveItem,
   resolveCustomer,
 } from "../../client/index.js";
-import { validateAmount, toDollars, formatDollars, sumCents, outputReport } from "../../utils/index.js";
+import { validateAmount, toDollars, formatDollars, sumCents, outputReport, assertKnownKeys } from "../../utils/index.js";
 
 interface SalesReceiptLineChange {
   line_id?: string;
@@ -30,6 +30,25 @@ interface CreateSalesReceiptLine {
   description?: string;
 }
 
+const CREATE_SR_KEYS = [
+  'txn_date', 'customer_name', 'customer_id',
+  'deposit_to_account', 'department_name', 'department_id',
+  'memo', 'doc_number', 'lines', 'draft',
+] as const;
+
+const EDIT_SR_KEYS = [
+  'id', 'txn_date', 'memo', 'deposit_to_account',
+  'department_name', 'lines', 'draft',
+] as const;
+
+const CREATE_SR_LINE_KEYS = [
+  'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description',
+] as const;
+
+const SR_LINE_CHANGE_KEYS = [
+  'line_id', 'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description', 'delete',
+] as const;
+
 export async function handleCreateSalesReceipt(
   client: QuickBooks,
   args: {
@@ -45,6 +64,7 @@ export async function handleCreateSalesReceipt(
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, CREATE_SR_KEYS, 'create_sales_receipt');
   const {
     txn_date, customer_name, customer_id,
     deposit_to_account, department_name, department_id,
@@ -54,6 +74,9 @@ export async function handleCreateSalesReceipt(
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
   }
+  lines.forEach((line, idx) =>
+    assertKnownKeys(line as unknown as Record<string, unknown>, CREATE_SR_LINE_KEYS, `create_sales_receipt.lines[${idx}]`)
+  );
 
   // Resolve customer (optional)
   let customerRef: { value: string; name: string } | undefined;
@@ -286,14 +309,21 @@ export async function handleEditSalesReceipt(
     txn_date?: string;
     memo?: string;
     deposit_to_account?: string;
-    department_name?: string;
+    department_name?: string | null;
     lines?: SalesReceiptLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, EDIT_SR_KEYS, 'edit_sales_receipt');
   const { id, txn_date, memo, deposit_to_account, department_name, lines: lineChanges, draft = true } = args;
 
-  // Fetch current SalesReceipt
+  if (lineChanges) {
+    lineChanges.forEach((change, idx) =>
+      assertKnownKeys(change as unknown as Record<string, unknown>, SR_LINE_CHANGE_KEYS, `edit_sales_receipt.lines[${idx}]`)
+    );
+  }
+
+  // Fetch current SalesReceipt (include tax-related header fields)
   const current = await promisify<unknown>((cb) =>
     client.getSalesReceipt(id, cb)
   ) as {
@@ -302,6 +332,9 @@ export async function handleEditSalesReceipt(
     TxnDate: string;
     DocNumber?: string;
     PrivateNote?: string;
+    GlobalTaxCalculation?: string;
+    TxnTaxDetail?: Record<string, unknown>;
+    CustomerRef?: { value: string; name?: string };
     DepositToAccountRef?: { value: string; name?: string };
     DepartmentRef?: { value: string; name?: string };
     Line: Array<{
@@ -320,8 +353,9 @@ export async function handleEditSalesReceipt(
     }>;
   };
 
-  // Determine if we're modifying lines - requires full update (not sparse)
-  const needsFullUpdate = lineChanges && lineChanges.length > 0;
+  const wantsClearDept = department_name === null;
+  const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
+  const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept;
 
   // Build updated SalesReceipt
   const updated: Record<string, unknown> = {
@@ -329,22 +363,19 @@ export async function handleEditSalesReceipt(
     SyncToken: current.SyncToken,
   };
 
-  // Only use sparse for non-line updates; full update needed for line modifications
-  // Note: node-quickbooks auto-sets sparse=true, so we must explicitly set sparse=false for full updates
   if (!needsFullUpdate) {
     updated.sparse = true;
   } else {
-    // Full update: explicitly set sparse=false (node-quickbooks defaults to true)
+    // Full update: preserve every header field — anything omitted is reset server-side.
     updated.sparse = false;
     updated.TxnDate = current.TxnDate;
     updated.DocNumber = current.DocNumber;
     updated.PrivateNote = current.PrivateNote;
-    if (current.DepositToAccountRef) {
-      updated.DepositToAccountRef = current.DepositToAccountRef;
-    }
-    if (current.DepartmentRef) {
-      updated.DepartmentRef = current.DepartmentRef;
-    }
+    if (current.CustomerRef) updated.CustomerRef = current.CustomerRef;
+    if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
+    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.DepositToAccountRef) updated.DepositToAccountRef = current.DepositToAccountRef;
+    if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
     // Copy lines and strip read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
@@ -369,11 +400,11 @@ export async function handleEditSalesReceipt(
   }
 
   // Resolve header-level department if provided
-  if (department_name !== undefined) {
+  if (wantsSetDept) {
     const deptCache = await getDepartmentCache(client);
-    let match = deptCache.byName.get(department_name.toLowerCase());
+    let match = deptCache.byName.get(department_name!.toLowerCase());
     if (!match) match = deptCache.items.find(d =>
-      d.FullyQualifiedName?.toLowerCase().includes(department_name.toLowerCase())
+      d.FullyQualifiedName?.toLowerCase().includes(department_name!.toLowerCase())
     );
     if (!match) throw new Error(`Department not found: "${department_name}"`);
     updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
@@ -477,10 +508,15 @@ export async function handleEditSalesReceipt(
       const newAcct = (updated.DepositToAccountRef as { name?: string })?.name || deposit_to_account;
       previewLines.push(`  Deposit To: ${current.DepositToAccountRef?.name || '(default)'} → ${newAcct}`);
     }
-    if (department_name !== undefined) {
+    if (wantsSetDept) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
     }
+    if (wantsClearDept) {
+      previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → (cleared)`);
+    }
+    previewLines.push('');
+    previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
 
     if (updated.Line) {
       previewLines.push('');

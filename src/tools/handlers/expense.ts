@@ -6,14 +6,31 @@ import {
   getAccountCache,
   getDepartmentCache,
   getVendorCache,
+  resolveCustomer,
+  resolveClass,
+  resolveTaxCode,
 } from "../../client/index.js";
-import { validateAmount, toDollars, formatDollars, sumCents, outputReport } from "../../utils/index.js";
+import {
+  validateAmount,
+  toDollars,
+  formatDollars,
+  sumCents,
+  outputReport,
+  assertKnownKeys,
+} from "../../utils/index.js";
+
+type BillableStatus = "Billable" | "NotBillable" | "HasBeenBilled";
 
 interface CreateExpenseLine {
   account_id?: string;
   account_name?: string;
   amount: number;
   description?: string;
+  customer_name?: string;
+  customer_id?: string;
+  class_name?: string;
+  tax_code?: string;
+  billable_status?: BillableStatus;
 }
 
 interface ExpenseLineChange {
@@ -21,8 +38,45 @@ interface ExpenseLineChange {
   account_name?: string;
   amount?: number;
   description?: string;
+  customer_name?: string | null;
+  customer_id?: string | null;
+  class_name?: string | null;
+  tax_code?: string | null;
+  billable_status?: BillableStatus;
   delete?: boolean;
 }
+
+const CREATE_EXPENSE_LINE_KEYS = [
+  'account_id', 'account_name', 'amount', 'description',
+  'customer_name', 'customer_id', 'class_name', 'tax_code', 'billable_status',
+] as const;
+
+const EXPENSE_LINE_CHANGE_KEYS = [
+  'line_id', 'account_name', 'amount', 'description',
+  'customer_name', 'customer_id', 'class_name', 'tax_code', 'billable_status',
+  'delete',
+] as const;
+
+const CREATE_EXPENSE_KEYS = [
+  'payment_type', 'payment_account', 'txn_date',
+  'entity_name', 'entity_id', 'vendor_name', 'vendor_id',
+  'department_name', 'department_id', 'memo', 'doc_number', 'lines', 'draft',
+] as const;
+
+const EDIT_EXPENSE_KEYS = [
+  'id', 'txn_date', 'memo', 'payment_account',
+  'department_name', 'entity_name', 'entity_id', 'vendor_name', 'vendor_id',
+  'doc_number', 'lines', 'draft',
+] as const;
+
+type LineDetail = {
+  AccountRef: { value: string; name?: string };
+  DepartmentRef?: { value: string; name?: string };
+  CustomerRef?: { value: string; name?: string };
+  ClassRef?: { value: string; name?: string };
+  TaxCodeRef?: { value: string; name?: string };
+  BillableStatus?: BillableStatus;
+};
 
 export async function handleCreateExpense(
   client: QuickBooks,
@@ -32,6 +86,8 @@ export async function handleCreateExpense(
     txn_date: string;
     entity_name?: string;
     entity_id?: string;
+    vendor_name?: string;
+    vendor_id?: string;
     department_name?: string;
     department_id?: string;
     memo?: string;
@@ -40,16 +96,25 @@ export async function handleCreateExpense(
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, CREATE_EXPENSE_KEYS, 'create_expense');
   const {
     payment_type, payment_account, txn_date,
-    entity_name, entity_id,
+    entity_name, entity_id, vendor_name, vendor_id,
     department_name, department_id,
     memo, doc_number, lines, draft = true,
   } = args;
 
+  // vendor_* is an accepted alias for entity_* — QBO's Purchase.EntityRef is
+  // the same "Payee" that the Canadian UI labels "Supplier". Accept either.
+  const payeeInputName = entity_name ?? vendor_name;
+  const payeeInputId = entity_id ?? vendor_id;
+
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
   }
+  lines.forEach((line, idx) =>
+    assertKnownKeys(line as unknown as Record<string, unknown>, CREATE_EXPENSE_LINE_KEYS, `create_expense.lines[${idx}]`)
+  );
 
   // Get cached lookups in parallel
   const [acctCache, deptCache, vendorCacheData] = await Promise.all([
@@ -74,7 +139,7 @@ export async function handleCreateExpense(
 
   // Resolve vendor/entity (optional)
   let entityRef: { value: string; name: string; type: string } | undefined;
-  const entityInput = entity_id || entity_name;
+  const entityInput = payeeInputId || payeeInputName;
   if (entityInput) {
     const byId = vendorCacheData.byId.get(entityInput);
     if (byId) {
@@ -120,8 +185,8 @@ export async function handleCreateExpense(
     }
   }
 
-  // Resolve lines
-  const resolvedLines = lines.map((line) => {
+  // Resolve lines (including new optional per-line fields)
+  const resolvedLines = await Promise.all(lines.map(async (line) => {
     let accountId = line.account_id;
     let accountName = line.account_name;
     let accountNum: string | undefined;
@@ -137,6 +202,11 @@ export async function handleCreateExpense(
 
     const amountCents = validateAmount(line.amount, `Line ${accountName || accountId}`);
 
+    const customerInput = line.customer_id || line.customer_name;
+    const customerRef = customerInput ? await resolveCustomer(client, customerInput) : undefined;
+    const classRef = line.class_name ? await resolveClass(client, line.class_name) : undefined;
+    const taxCodeRef = line.tax_code ? await resolveTaxCode(client, line.tax_code) : undefined;
+
     return {
       ...line,
       account_id: accountId!,
@@ -144,8 +214,11 @@ export async function handleCreateExpense(
       account_num: accountNum,
       amount_cents: amountCents,
       amount: toDollars(amountCents),
+      customerRef,
+      classRef,
+      taxCodeRef,
     };
-  });
+  }));
 
   // Calculate total
   const totalCents = sumCents(resolvedLines.map(l => l.amount_cents));
@@ -168,6 +241,10 @@ export async function handleCreateExpense(
           value: line.account_id,
           name: line.account_name,
         },
+        ...(line.customerRef && { CustomerRef: line.customerRef }),
+        ...(line.classRef && { ClassRef: line.classRef }),
+        ...(line.taxCodeRef && { TaxCodeRef: line.taxCodeRef }),
+        ...(line.billable_status && { BillableStatus: line.billable_status }),
       },
     })),
   };
@@ -191,9 +268,15 @@ export async function handleCreateExpense(
       `Total: $${formatDollars(totalCents)}`,
       "",
       "Lines:",
-      ...resolvedLines.map(l =>
-        `  ${formatAccount(l)}: $${l.amount.toFixed(2)}${l.description ? ` "${l.description}"` : ""}`
-      ),
+      ...resolvedLines.map(l => {
+        const tags: string[] = [];
+        if (l.customerRef) tags.push(`cust: ${l.customerRef.name}`);
+        if (l.classRef) tags.push(`class: ${l.classRef.name}`);
+        if (l.taxCodeRef) tags.push(`tax: ${l.taxCodeRef.name}`);
+        if (l.billable_status) tags.push(l.billable_status);
+        const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
+        return `  ${formatAccount(l)}${tagStr}: $${l.amount.toFixed(2)}${l.description ? ` "${l.description}"` : ""}`;
+      }),
       "",
       "Set draft=false to create this expense.",
     ].join("\n");
@@ -244,6 +327,7 @@ export async function handleGetExpense(
     DocNumber?: string;
     PrivateNote?: string;
     TotalAmt?: number;
+    GlobalTaxCalculation?: string;
     AccountRef?: { value: string; name?: string };
     EntityRef?: { value: string; name?: string; type?: string };
     DepartmentRef?: { value: string; name?: string };
@@ -252,10 +336,7 @@ export async function handleGetExpense(
       Amount: number;
       Description?: string;
       DetailType: string;
-      AccountBasedExpenseLineDetail?: {
-        AccountRef: { value: string; name?: string };
-        DepartmentRef?: { value: string; name?: string };
-      };
+      AccountBasedExpenseLineDetail?: LineDetail;
       ItemBasedExpenseLineDetail?: {
         ItemRef: { value: string; name?: string };
         Qty?: number;
@@ -278,6 +359,7 @@ export async function handleGetExpense(
     `Date: ${expense.TxnDate}`,
     `Ref no.: ${expense.DocNumber || '(none)'}`,
     `Memo: ${expense.PrivateNote || '(none)'}`,
+    `Tax Calc: ${expense.GlobalTaxCalculation || '(none)'}`,
     `Total: $${(expense.TotalAmt || 0).toFixed(2)}`,
     '',
     'Lines:',
@@ -287,9 +369,15 @@ export async function handleGetExpense(
     if (line.AccountBasedExpenseLineDetail) {
       const detail = line.AccountBasedExpenseLineDetail;
       const acctName = detail.AccountRef.name || detail.AccountRef.value;
-      const deptStr = detail.DepartmentRef?.name ? ` [${detail.DepartmentRef.name}]` : '';
+      const tags: string[] = [];
+      if (detail.DepartmentRef?.name) tags.push(`dept: ${detail.DepartmentRef.name}`);
+      if (detail.CustomerRef?.name) tags.push(`cust: ${detail.CustomerRef.name}`);
+      if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
+      if (detail.TaxCodeRef?.name) tags.push(`tax: ${detail.TaxCodeRef.name}`);
+      if (detail.BillableStatus && detail.BillableStatus !== 'NotBillable') tags.push(detail.BillableStatus);
+      const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
       const descStr = line.Description ? ` "${line.Description}"` : '';
-      lines.push(`  Line ${line.Id}: ${acctName}${deptStr} $${line.Amount.toFixed(2)}${descStr}`);
+      lines.push(`  Line ${line.Id}: ${acctName}${tagStr} $${line.Amount.toFixed(2)}${descStr}`);
     } else if (line.ItemBasedExpenseLineDetail) {
       const detail = line.ItemBasedExpenseLineDetail;
       const itemName = detail.ItemRef.name || detail.ItemRef.value;
@@ -311,16 +399,34 @@ export async function handleEditExpense(
     txn_date?: string;
     memo?: string;
     payment_account?: string;
-    department_name?: string;
-    entity_name?: string;
-    entity_id?: string;
+    department_name?: string | null;
+    entity_name?: string | null;
+    entity_id?: string | null;
+    vendor_name?: string | null;
+    vendor_id?: string | null;
+    doc_number?: string;
     lines?: ExpenseLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
-  const { id, txn_date, memo, payment_account, department_name, entity_name, entity_id, lines: lineChanges, draft = true } = args;
+  assertKnownKeys(args as Record<string, unknown>, EDIT_EXPENSE_KEYS, 'edit_expense');
+  const {
+    id, txn_date, memo, payment_account, department_name,
+    entity_name, entity_id, vendor_name, vendor_id, doc_number,
+    lines: lineChanges, draft = true,
+  } = args;
 
-  // Fetch current Purchase
+  // Accept vendor_* as an alias for entity_*
+  const payeeName = entity_name ?? vendor_name;
+  const payeeId = entity_id ?? vendor_id;
+
+  if (lineChanges) {
+    lineChanges.forEach((change, idx) =>
+      assertKnownKeys(change as unknown as Record<string, unknown>, EXPENSE_LINE_CHANGE_KEYS, `edit_expense.lines[${idx}]`)
+    );
+  }
+
+  // Fetch current Purchase (include tax-related header fields for preservation)
   const current = await promisify<unknown>((cb) =>
     client.getPurchase(id, cb)
   ) as {
@@ -330,6 +436,8 @@ export async function handleEditExpense(
     PaymentType: string;
     DocNumber?: string;
     PrivateNote?: string;
+    GlobalTaxCalculation?: string;
+    TxnTaxDetail?: Record<string, unknown>;
     AccountRef?: { value: string; name?: string };
     EntityRef?: { value: string; name?: string; type?: string };
     DepartmentRef?: { value: string; name?: string };
@@ -338,43 +446,37 @@ export async function handleEditExpense(
       Amount: number;
       Description?: string;
       DetailType: string;
-      AccountBasedExpenseLineDetail?: {
-        AccountRef: { value: string; name?: string };
-        DepartmentRef?: { value: string; name?: string };
-      };
+      AccountBasedExpenseLineDetail?: LineDetail;
     }>;
   };
 
-  // Determine if we're modifying lines - requires full update (not sparse)
-  const needsFullUpdate = lineChanges && lineChanges.length > 0;
+  // Intent flags
+  const wantsClearDept = department_name === null;
+  const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
+  const wantsClearPayee = payeeName === null || payeeId === null;
+  const wantsSetPayee = typeof (payeeId ?? payeeName) === 'string' && ((payeeId ?? payeeName) as string).length > 0;
 
-  // Build updated Purchase
-  // Note: PaymentType is required by QB API even for sparse updates
+  const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept || wantsClearPayee;
+
   const updated: Record<string, unknown> = {
     Id: current.Id,
     SyncToken: current.SyncToken,
     PaymentType: current.PaymentType,
   };
 
-  // Only use sparse for non-line updates; full update needed for line modifications
-  // Note: node-quickbooks auto-sets sparse=true, so we must explicitly set sparse=false for full updates
   if (!needsFullUpdate) {
     updated.sparse = true;
   } else {
-    // Full update: explicitly set sparse=false (node-quickbooks defaults to true)
+    // Full update: preserve every header field — anything omitted is reset server-side.
     updated.sparse = false;
     updated.TxnDate = current.TxnDate;
     updated.DocNumber = current.DocNumber;
     updated.PrivateNote = current.PrivateNote;
-    if (current.AccountRef) {
-      updated.AccountRef = current.AccountRef;
-    }
-    if (current.EntityRef) {
-      updated.EntityRef = current.EntityRef;
-    }
-    if (current.DepartmentRef) {
-      updated.DepartmentRef = current.DepartmentRef;
-    }
+    if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
+    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.AccountRef) updated.AccountRef = current.AccountRef;
+    if (current.EntityRef && !wantsClearPayee) updated.EntityRef = current.EntityRef;
+    if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
     // Copy lines and strip read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
@@ -384,6 +486,7 @@ export async function handleEditExpense(
 
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
+  if (doc_number !== undefined) updated.DocNumber = doc_number;
 
   // Resolve payment account if provided
   if (payment_account !== undefined) {
@@ -398,19 +501,19 @@ export async function handleEditExpense(
   }
 
   // Resolve header-level department if provided
-  if (department_name !== undefined) {
+  if (wantsSetDept) {
     const deptCache = await getDepartmentCache(client);
-    let match = deptCache.byName.get(department_name.toLowerCase());
+    let match = deptCache.byName.get(department_name!.toLowerCase());
     if (!match) match = deptCache.items.find(d =>
-      d.FullyQualifiedName?.toLowerCase().includes(department_name.toLowerCase())
+      d.FullyQualifiedName?.toLowerCase().includes(department_name!.toLowerCase())
     );
     if (!match) throw new Error(`Department not found: "${department_name}"`);
     updated.DepartmentRef = { value: match.Id, name: match.FullyQualifiedName || match.Name };
   }
 
   // Resolve entity (vendor/payee) if provided
-  const entityInput = entity_id || entity_name;
-  if (entityInput) {
+  if (wantsSetPayee) {
+    const entityInput = (payeeId ?? payeeName) as string;
     const vendorCacheData = await getVendorCache(client);
     const byId = vendorCacheData.byId.get(entityInput);
     if (byId) {
@@ -432,8 +535,12 @@ export async function handleEditExpense(
     }
   }
 
-  // Process line changes if provided
-  // Use updated.Line if available (for full updates with stripped read-only fields), else current.Line
+  type LineEvent =
+    | { kind: 'update'; lineId: string; before: typeof current.Line[0]; after: typeof current.Line[0]; changedKeys: string[]; noopKeys: string[] }
+    | { kind: 'delete'; lineId: string; before: typeof current.Line[0] }
+    | { kind: 'new'; after: typeof current.Line[0]; providedKeys: string[] };
+  const events: LineEvent[] = [];
+
   let finalLines = [...((updated.Line as typeof current.Line) || current.Line)];
 
   if (lineChanges && lineChanges.length > 0) {
@@ -456,44 +563,99 @@ export async function handleEditExpense(
           throw new Error(`Line ID ${change.line_id} not found in expense`);
         }
 
+        const before = finalLines[lineIndex];
+
         if (change.delete) {
           finalLines.splice(lineIndex, 1);
-        } else {
-          const line = { ...finalLines[lineIndex] };
-          const detail = { ...(line.AccountBasedExpenseLineDetail || {}) } as {
-            AccountRef: { value: string; name?: string };
-            DepartmentRef?: { value: string; name?: string };
-          };
-
-          if (change.amount !== undefined) {
-            const amountCents = validateAmount(change.amount, `Line ${change.line_id}`);
-            line.Amount = toDollars(amountCents);
-          }
-          if (change.description !== undefined) line.Description = change.description;
-          if (change.account_name !== undefined) detail.AccountRef = resolveAcct(change.account_name);
-
-          line.AccountBasedExpenseLineDetail = detail;
-          line.DetailType = 'AccountBasedExpenseLineDetail';
-          finalLines[lineIndex] = line;
+          events.push({ kind: 'delete', lineId: change.line_id, before });
+          continue;
         }
+
+        const line = { ...before };
+        const detail: LineDetail = { ...(line.AccountBasedExpenseLineDetail || { AccountRef: { value: '' } }) };
+
+        const changedKeys: string[] = [];
+        const noopKeys: string[] = [];
+
+        if (change.amount !== undefined) {
+          const amountCents = validateAmount(change.amount, `Line ${change.line_id}`);
+          const next = toDollars(amountCents);
+          if (next !== line.Amount) { line.Amount = next; changedKeys.push('amount'); } else { noopKeys.push('amount'); }
+        }
+        if (change.description !== undefined) {
+          if (change.description !== (line.Description || '')) { line.Description = change.description; changedKeys.push('description'); } else { noopKeys.push('description'); }
+        }
+        if (change.account_name !== undefined) {
+          const nextAcct = resolveAcct(change.account_name);
+          if (nextAcct.value !== detail.AccountRef?.value) { detail.AccountRef = nextAcct; changedKeys.push('account_name'); } else { noopKeys.push('account_name'); }
+        }
+        const customerInput = change.customer_id ?? change.customer_name;
+        if (customerInput === null || customerInput === '') {
+          if (detail.CustomerRef) { delete detail.CustomerRef; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
+        } else if (typeof customerInput === 'string') {
+          const nextCust = await resolveCustomer(client, customerInput);
+          if (nextCust.value !== detail.CustomerRef?.value) { detail.CustomerRef = nextCust; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
+        }
+        if (change.class_name !== undefined) {
+          if (change.class_name === null || change.class_name === '') {
+            if (detail.ClassRef) { delete detail.ClassRef; changedKeys.push('class'); } else { noopKeys.push('class'); }
+          } else {
+            const nextClass = await resolveClass(client, change.class_name);
+            if (nextClass.value !== detail.ClassRef?.value) { detail.ClassRef = nextClass; changedKeys.push('class'); } else { noopKeys.push('class'); }
+          }
+        }
+        if (change.tax_code !== undefined) {
+          if (change.tax_code === null || change.tax_code === '') {
+            if (detail.TaxCodeRef) { delete detail.TaxCodeRef; changedKeys.push('tax_code'); } else { noopKeys.push('tax_code'); }
+          } else {
+            const nextTax = await resolveTaxCode(client, change.tax_code);
+            if (nextTax.value !== detail.TaxCodeRef?.value) { detail.TaxCodeRef = nextTax; changedKeys.push('tax_code'); } else { noopKeys.push('tax_code'); }
+          }
+        }
+        if (change.billable_status !== undefined) {
+          if (change.billable_status !== detail.BillableStatus) { detail.BillableStatus = change.billable_status; changedKeys.push('billable_status'); } else { noopKeys.push('billable_status'); }
+        }
+
+        line.AccountBasedExpenseLineDetail = detail;
+        line.DetailType = 'AccountBasedExpenseLineDetail';
+        finalLines[lineIndex] = line;
+        events.push({ kind: 'update', lineId: change.line_id, before, after: line, changedKeys, noopKeys });
       } else {
-        if (!change.amount || !change.account_name) {
+        if (change.amount === undefined || !change.account_name) {
           throw new Error('New lines require amount and account_name');
         }
 
-        // Validate and normalize the amount
         const amountCents = validateAmount(change.amount, `New line for ${change.account_name}`);
 
-        // Id omitted for new lines - QB will assign
+        const customerInput = change.customer_id ?? change.customer_name;
+        const customerRef = typeof customerInput === 'string' && customerInput.length > 0
+          ? await resolveCustomer(client, customerInput) : undefined;
+        const classRef = typeof change.class_name === 'string' && change.class_name.length > 0
+          ? await resolveClass(client, change.class_name) : undefined;
+        const taxCodeRef = typeof change.tax_code === 'string' && change.tax_code.length > 0
+          ? await resolveTaxCode(client, change.tax_code) : undefined;
+
+        const providedKeys: string[] = ['account_name', 'amount'];
+        if (change.description) providedKeys.push('description');
+        if (customerRef) providedKeys.push('customer');
+        if (classRef) providedKeys.push('class');
+        if (taxCodeRef) providedKeys.push('tax_code');
+        if (change.billable_status) providedKeys.push('billable_status');
+
         const newLine = {
           Amount: toDollars(amountCents),
           Description: change.description,
           DetailType: 'AccountBasedExpenseLineDetail',
           AccountBasedExpenseLineDetail: {
             AccountRef: resolveAcct(change.account_name),
+            ...(customerRef && { CustomerRef: customerRef }),
+            ...(classRef && { ClassRef: classRef }),
+            ...(taxCodeRef && { TaxCodeRef: taxCodeRef }),
+            ...(change.billable_status && { BillableStatus: change.billable_status }),
           }
         } as typeof finalLines[0];
         finalLines.push(newLine);
+        events.push({ kind: 'new', after: newLine, providedKeys });
       }
     }
 
@@ -510,33 +672,52 @@ export async function handleEditExpense(
       `SyncToken: ${current.SyncToken}`,
       `Payment Type: ${current.PaymentType} (cannot be changed)`,
       '',
-      'Changes:',
+      'Header changes:',
     ];
 
-    if (txn_date !== undefined) previewLines.push(`  Date: ${current.TxnDate} → ${txn_date}`);
-    if (memo !== undefined) previewLines.push(`  Memo: ${current.PrivateNote || '(none)'} → ${memo}`);
+    const headerRows: string[] = [];
+    if (txn_date !== undefined) headerRows.push(`  Date: ${current.TxnDate} → ${txn_date}`);
+    if (memo !== undefined) headerRows.push(`  Memo: ${current.PrivateNote || '(none)'} → ${memo}`);
+    if (doc_number !== undefined) headerRows.push(`  Ref no.: ${current.DocNumber || '(none)'} → ${doc_number}`);
     if (payment_account !== undefined) {
       const newAcct = (updated.AccountRef as { name?: string })?.name || payment_account;
-      previewLines.push(`  Payment Account: ${current.AccountRef?.name || '(none)'} → ${newAcct}`);
+      headerRows.push(`  Payment Account: ${current.AccountRef?.name || '(none)'} → ${newAcct}`);
     }
-    if (department_name !== undefined) {
+    if (wantsSetDept) {
       const newDept = (updated.DepartmentRef as { name?: string })?.name || department_name;
-      previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
+      headerRows.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${newDept}`);
     }
-    if (entityInput) {
-      const newEntity = (updated.EntityRef as { name?: string })?.name || entityInput;
-      previewLines.push(`  Vendor/Payee: ${current.EntityRef?.name || '(none)'} → ${newEntity}`);
+    if (wantsClearDept) headerRows.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → (cleared)`);
+    if (wantsSetPayee) {
+      const newEntity = (updated.EntityRef as { name?: string })?.name || (payeeId ?? payeeName);
+      headerRows.push(`  Vendor/Payee: ${current.EntityRef?.name || '(none)'} → ${newEntity}`);
     }
+    if (wantsClearPayee) headerRows.push(`  Vendor/Payee: ${current.EntityRef?.name || '(none)'} → (cleared)`);
+    if (headerRows.length === 0) previewLines.push('  (none)'); else previewLines.push(...headerRows);
 
-    if (updated.Line) {
+    previewLines.push('');
+    previewLines.push('Tax calc (preserved):');
+    previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+
+    if (events.length > 0) {
       previewLines.push('');
-      previewLines.push('Updated Lines:');
-      for (const line of updated.Line as typeof finalLines) {
-        const detail = line.AccountBasedExpenseLineDetail;
-        if (detail) {
-          const acctName = detail.AccountRef.name || detail.AccountRef.value;
-          const deptStr = detail.DepartmentRef?.name ? ` [${detail.DepartmentRef.name}]` : '';
-          previewLines.push(`  ${acctName}${deptStr}: $${line.Amount.toFixed(2)}`);
+      previewLines.push('Line changes:');
+      for (const ev of events) {
+        if (ev.kind === 'delete') {
+          const acctName = ev.before.AccountBasedExpenseLineDetail?.AccountRef?.name || '(line)';
+          previewLines.push(`  Line ${ev.lineId}: DELETE ${acctName} $${ev.before.Amount.toFixed(2)}`);
+        } else if (ev.kind === 'new') {
+          const d = ev.after.AccountBasedExpenseLineDetail;
+          const acctName = d?.AccountRef?.name || '(new)';
+          previewLines.push(`  NEW ${acctName}: $${ev.after.Amount.toFixed(2)} (set: ${ev.providedKeys.join(', ')})`);
+        } else {
+          const d = ev.after.AccountBasedExpenseLineDetail;
+          const acctName = d?.AccountRef?.name || '(line)';
+          const parts: string[] = [];
+          if (ev.changedKeys.length) parts.push(`changed: ${ev.changedKeys.join(', ')}`);
+          if (ev.noopKeys.length) parts.push(`unchanged: ${ev.noopKeys.join(', ')}`);
+          const summary = parts.length ? ` [${parts.join('; ')}]` : ' [no-op]';
+          previewLines.push(`  Line ${ev.lineId}: ${acctName} $${ev.after.Amount.toFixed(2)}${summary}`);
         }
       }
     }

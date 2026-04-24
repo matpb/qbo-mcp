@@ -13,7 +13,26 @@ import {
   toDollars,
   formatDollars,
   outputReport,
+  assertKnownKeys,
 } from "../../utils/index.js";
+
+const CREATE_JE_KEYS = [
+  'txn_date', 'memo', 'lines', 'draft', 'doc_number',
+] as const;
+
+const EDIT_JE_KEYS = [
+  'id', 'txn_date', 'memo', 'doc_number', 'lines', 'draft',
+] as const;
+
+const CREATE_JE_LINE_KEYS = [
+  'account_id', 'account_name', 'amount', 'posting_type',
+  'department_id', 'department_name', 'description',
+] as const;
+
+const JE_LINE_CHANGE_KEYS = [
+  'line_id', 'account_name', 'amount', 'posting_type',
+  'department_name', 'description', 'delete',
+] as const;
 
 interface JournalEntryLine {
   account_id?: string;
@@ -45,7 +64,11 @@ export async function handleCreateJournalEntry(
     doc_number?: string;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, CREATE_JE_KEYS, 'create_journal_entry');
   const { txn_date, memo, lines, draft = true, doc_number } = args;
+  lines.forEach((line, idx) =>
+    assertKnownKeys(line as unknown as Record<string, unknown>, CREATE_JE_LINE_KEYS, `create_journal_entry.lines[${idx}]`)
+  );
 
   // Get cached accounts and departments (uses TTL-based cache)
   const [acctCache, deptCache] = await Promise.all([
@@ -313,7 +336,14 @@ export async function handleEditJournalEntry(
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
+  assertKnownKeys(args as Record<string, unknown>, EDIT_JE_KEYS, 'edit_journal_entry');
   const { id, txn_date, memo, doc_number, lines: lineChanges, draft = true } = args;
+
+  if (lineChanges) {
+    lineChanges.forEach((change, idx) =>
+      assertKnownKeys(change as unknown as Record<string, unknown>, JE_LINE_CHANGE_KEYS, `edit_journal_entry.lines[${idx}]`)
+    );
+  }
 
   // Fetch current JE
   const current = await promisify<unknown>((cb) =>
@@ -324,6 +354,8 @@ export async function handleEditJournalEntry(
     TxnDate: string;
     DocNumber?: string;
     PrivateNote?: string;
+    GlobalTaxCalculation?: string;
+    TxnTaxDetail?: Record<string, unknown>;
     Line: Array<{
       Id: string;
       Amount: number;
@@ -351,11 +383,13 @@ export async function handleEditJournalEntry(
   if (!needsFullUpdate) {
     updated.sparse = true;
   } else {
-    // Full update: explicitly set sparse=false (node-quickbooks defaults to true)
+    // Full update: preserve every header field — anything omitted is reset server-side.
     updated.sparse = false;
     updated.TxnDate = current.TxnDate;
     updated.PrivateNote = current.PrivateNote;
     updated.DocNumber = current.DocNumber;
+    if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
+    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
     // Copy lines and strip read-only fields
     updated.Line = current.Line.map(line => {
       const { LineNum, ...rest } = line as Record<string, unknown>;
