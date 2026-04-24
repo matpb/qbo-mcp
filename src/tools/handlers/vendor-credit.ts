@@ -20,6 +20,8 @@ import {
 } from "../../utils/index.js";
 
 type BillableStatus = "Billable" | "NotBillable" | "HasBeenBilled";
+type GlobalTaxCalc = "TaxExcluded" | "TaxInclusive" | "NotApplicable";
+const GLOBAL_TAX_CALC_VALUES = new Set<GlobalTaxCalc>(['TaxExcluded', 'TaxInclusive', 'NotApplicable']);
 
 interface CreateVendorCreditLine {
   account_id?: string;
@@ -54,7 +56,7 @@ const CREATE_VC_KEYS = [
 
 const EDIT_VC_KEYS = [
   'id', 'vendor_name', 'txn_date', 'memo',
-  'department_name', 'doc_number', 'lines', 'draft',
+  'department_name', 'global_tax_calculation', 'doc_number', 'lines', 'draft',
 ] as const;
 
 const CREATE_VC_LINE_KEYS = [
@@ -359,13 +361,18 @@ export async function handleEditVendorCredit(
     txn_date?: string;
     memo?: string;
     department_name?: string | null;
+    global_tax_calculation?: GlobalTaxCalc;
     doc_number?: string;
     lines?: VendorCreditLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   assertKnownKeys(args as Record<string, unknown>, EDIT_VC_KEYS, 'edit_vendor_credit');
-  const { id, vendor_name, txn_date, memo, department_name, doc_number, lines: lineChanges, draft = true } = args;
+  const { id, vendor_name, txn_date, memo, department_name, global_tax_calculation, doc_number, lines: lineChanges, draft = true } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (lineChanges) {
     lineChanges.forEach((change, idx) =>
@@ -444,6 +451,7 @@ export async function handleEditVendorCredit(
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
   if (doc_number !== undefined) updated.DocNumber = doc_number;
+  if (global_tax_calculation !== undefined) updated.GlobalTaxCalculation = global_tax_calculation;
 
   if (wantsSetDept) {
     const deptCache = await getDepartmentCache(client);
@@ -597,11 +605,15 @@ export async function handleEditVendorCredit(
     if (doc_number !== undefined) headerRows.push(`  Ref no.: ${current.DocNumber || '(none)'} → ${doc_number}`);
     if (wantsSetDept) headerRows.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → ${(updated.DepartmentRef as { name?: string })?.name || department_name}`);
     if (wantsClearDept) headerRows.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → (cleared)`);
+    if (global_tax_calculation !== undefined) headerRows.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} → ${global_tax_calculation}`);
     if (headerRows.length === 0) previewLines.push('  (none)'); else previewLines.push(...headerRows);
 
     previewLines.push('');
-    previewLines.push('Tax calc (preserved):');
-    previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+    } else {
+      previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    }
 
     if (events.length > 0) {
       previewLines.push('');

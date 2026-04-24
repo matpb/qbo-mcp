@@ -340,6 +340,11 @@ export const toolDefinitions = [
             },
           },
         },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Use to repair transactions whose tax model was accidentally set to NotApplicable. If omitted, the existing value is preserved.",
+        },
         draft: {
           type: "boolean",
           description: "If true, validate and show preview without saving (default: true)",
@@ -547,6 +552,11 @@ export const toolDefinitions = [
             },
           },
         },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Use to repair transactions whose tax model was accidentally set to NotApplicable. If omitted, the existing value is preserved.",
+        },
         draft: {
           type: "boolean",
           description: "If true, validate and show preview without saving (default: true)",
@@ -666,6 +676,11 @@ export const toolDefinitions = [
         vendor_id: {
           type: ["string", "null"],
           description: "Alias for entity_id.",
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Use to repair transactions whose tax model was accidentally set to NotApplicable. If omitted, the existing value is preserved.",
         },
         draft: {
           type: "boolean",
@@ -859,12 +874,25 @@ export const toolDefinitions = [
                 type: "string",
                 description: "Line description",
               },
+              class_name: {
+                type: ["string", "null"],
+                description: "Class name (auto-resolved to ID). Pass null or \"\" to clear.",
+              },
+              tax_code: {
+                type: ["string", "null"],
+                description: "Tax code name or ID (e.g., 'TAX', 'NON', Canadian GST/HST codes). Pass null or \"\" to clear.",
+              },
               delete: {
                 type: "boolean",
                 description: "Set true to remove this line (requires line_id)",
               },
             },
           },
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Use to repair transactions whose tax model was accidentally set to NotApplicable. If omitted, the existing value is preserved.",
         },
         draft: {
           type: "boolean",
@@ -943,6 +971,14 @@ export const toolDefinitions = [
               description: {
                 type: "string",
                 description: "Line description (optional)",
+              },
+              class_name: {
+                type: "string",
+                description: "Class name (auto-resolved to ID).",
+              },
+              tax_code: {
+                type: "string",
+                description: "Tax code name or ID.",
               },
             },
             required: [],
@@ -1169,6 +1205,11 @@ export const toolDefinitions = [
             },
           },
         },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Use to repair transactions whose tax model was accidentally set to NotApplicable. If omitted, the existing value is preserved.",
+        },
         draft: {
           type: "boolean",
           description: "If true, validate and show preview without saving (default: true)",
@@ -1222,6 +1263,10 @@ export const toolDefinitions = [
               entity_id: {
                 type: "string",
                 description: "Entity ID (use if you already know it, otherwise use entity_name)",
+              },
+              class_name: {
+                type: "string",
+                description: "Class name (auto-resolved to ID).",
               },
             },
             required: ["amount"],
@@ -1311,9 +1356,26 @@ export const toolDefinitions = [
                 type: "string",
                 description: "Line description",
               },
+              entity_name: {
+                type: ["string", "null"],
+                description: "Vendor/customer name to set as the line Entity. Pass null or \"\" to clear the Entity reference.",
+              },
+              entity_id: {
+                type: ["string", "null"],
+                description: "Vendor/customer ID. Pass null to clear.",
+              },
+              class_name: {
+                type: ["string", "null"],
+                description: "Class name (auto-resolved to ID). Pass null or \"\" to clear.",
+              },
             },
             required: ["amount", "account_name"],
           },
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Rarely needed for deposits, but exposed for consistency with the other edit tools.",
         },
         draft: {
           type: "boolean",
@@ -1517,6 +1579,11 @@ export const toolDefinitions = [
               },
             },
           },
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Override the header GlobalTaxCalculation. Use to repair transactions whose tax model was accidentally set to NotApplicable. If omitted, the existing value is preserved.",
         },
         draft: {
           type: "boolean",

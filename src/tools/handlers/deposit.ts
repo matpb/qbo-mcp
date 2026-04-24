@@ -6,9 +6,14 @@ import {
   getAccountCache,
   getDepartmentCache,
   getVendorCache,
+  resolveClass,
 } from "../../client/index.js";
 import { validateAmount, toDollars, formatDollars, toCents, sumCents, outputReport, assertKnownKeys } from "../../utils/index.js";
 import type { AccountCache, DepartmentCache, VendorCache } from "../../types/index.js";
+
+type GlobalTaxCalc = "TaxExcluded" | "TaxInclusive" | "NotApplicable";
+
+const GLOBAL_TAX_CALC_VALUES = new Set<GlobalTaxCalc>(['TaxExcluded', 'TaxInclusive', 'NotApplicable']);
 
 const CREATE_DEPOSIT_KEYS = [
   'deposit_to_account', 'txn_date', 'lines',
@@ -17,15 +22,17 @@ const CREATE_DEPOSIT_KEYS = [
 
 const EDIT_DEPOSIT_KEYS = [
   'id', 'txn_date', 'memo', 'deposit_to_account', 'department_name',
-  'lines', 'draft', 'expected_total',
+  'global_tax_calculation', 'lines', 'draft', 'expected_total',
 ] as const;
 
 const CREATE_DEPOSIT_LINE_KEYS = [
-  'amount', 'account_name', 'account_id', 'description', 'entity_name', 'entity_id',
+  'amount', 'account_name', 'account_id', 'description',
+  'entity_name', 'entity_id', 'class_name',
 ] as const;
 
 const EDIT_DEPOSIT_LINE_KEYS = [
   'line_id', 'amount', 'account_name', 'description',
+  'entity_name', 'entity_id', 'class_name',
 ] as const;
 
 // --- Interfaces ---
@@ -38,14 +45,18 @@ interface CreateDepositLineInput {
   description?: string;
   entity_name?: string;
   entity_id?: string;
+  class_name?: string;
 }
 
-// For edit_deposit lines (has line_id, no entity support)
+// For edit_deposit lines
 interface DepositLineInput {
-  line_id?: string;  // Include to update existing line (preserves Entity ref)
+  line_id?: string;  // Include to update existing line (preserves Entity ref unless overridden)
   amount: number;
   account_name: string;
   description?: string;
+  entity_name?: string | null;
+  entity_id?: string | null;
+  class_name?: string | null;
 }
 
 interface DepositLine {
@@ -168,7 +179,7 @@ export async function handleCreateDeposit(
   }
 
   // Resolve lines
-  const resolvedLines = lines.map((line, i) => {
+  const resolvedLines = await Promise.all(lines.map(async (line, i) => {
     const label = `Line ${i + 1}`;
 
     // Resolve account
@@ -197,14 +208,18 @@ export async function handleCreateDeposit(
       entityRef = resolveEntityRef(vendorCacheData, line.entity_name);
     }
 
+    // Resolve class if provided
+    const classRef = line.class_name ? await resolveClass(client, line.class_name) : undefined;
+
     return {
       accountRef,
       amountCents,
       amount: toDollars(amountCents),
       description: line.description,
       entityRef,
+      classRef,
     };
-  });
+  }));
 
   // Calculate total for display
   const totalCents = sumCents(resolvedLines.map(l => l.amountCents));
@@ -219,9 +234,8 @@ export async function handleCreateDeposit(
       const depositLineDetail: Record<string, unknown> = {
         AccountRef: line.accountRef,
       };
-      if (line.entityRef) {
-        depositLineDetail.Entity = line.entityRef;
-      }
+      if (line.entityRef) depositLineDetail.Entity = line.entityRef;
+      if (line.classRef) depositLineDetail.ClassRef = line.classRef;
       return {
         Amount: line.amount,
         DetailType: "DepositLineDetail",
@@ -334,13 +348,18 @@ export async function handleEditDeposit(
     memo?: string;
     deposit_to_account?: string;
     department_name?: string | null;
+    global_tax_calculation?: GlobalTaxCalc;
     lines?: DepositLineInput[];
     draft?: boolean;
     expected_total?: number;  // For fixing corrupted deposits - bypasses validation
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   assertKnownKeys(args as Record<string, unknown>, EDIT_DEPOSIT_KEYS, 'edit_deposit');
-  const { id, txn_date, memo, deposit_to_account, department_name, lines: newLines, draft = true, expected_total } = args;
+  const { id, txn_date, memo, deposit_to_account, department_name, global_tax_calculation, lines: newLines, draft = true, expected_total } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (newLines) {
     newLines.forEach((line, idx) =>
@@ -399,6 +418,7 @@ export async function handleEditDeposit(
 
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
+  if (global_tax_calculation !== undefined) updated.GlobalTaxCalculation = global_tax_calculation;
 
   // Fetch caches when needed for header-level resolution or line processing
   const needsAcctCache = deposit_to_account !== undefined || (newLines && newLines.length > 0);
@@ -433,6 +453,14 @@ export async function handleEditDeposit(
     const finalLines: DepositLine[] = [];
     const lineCents: number[] = [];
 
+    // Lazy-load vendor cache (only if any line has an entity_name/entity_id string value)
+    let vendorCacheData: VendorCache | null = null;
+    const needsVendorCache = newLines.some(l =>
+      typeof l.entity_name === 'string' && l.entity_name.length > 0 ||
+      typeof l.entity_id === 'string' && l.entity_id.length > 0
+    );
+    if (needsVendorCache) vendorCacheData = await getVendorCache(client);
+
     for (let i = 0; i < newLines.length; i++) {
       const input = newLines[i];
       const amountCents = validateAmount(input.amount, `Line ${i + 1}`);
@@ -441,7 +469,7 @@ export async function handleEditDeposit(
       let line: DepositLine;
 
       if (input.line_id) {
-        // Update existing line - preserve Entity ref
+        // Update existing line - preserve Entity ref unless overridden
         const existing = currentLinesById.get(input.line_id);
         if (!existing) {
           throw new Error(`Line ID ${input.line_id} not found in deposit`);
@@ -468,6 +496,29 @@ export async function handleEditDeposit(
 
       if (input.description !== undefined) {
         line.Description = input.description;
+      }
+
+      // Apply entity override / clear
+      const entityInput = input.entity_id ?? input.entity_name;
+      if (entityInput === null || entityInput === '') {
+        if (line.DepositLineDetail) delete line.DepositLineDetail.Entity;
+      } else if (typeof entityInput === 'string') {
+        line.DepositLineDetail = {
+          ...line.DepositLineDetail!,
+          Entity: resolveEntityRef(vendorCacheData!, entityInput),
+        };
+      }
+
+      // Apply class override / clear
+      if (input.class_name !== undefined) {
+        if (input.class_name === null || input.class_name === '') {
+          if (line.DepositLineDetail) delete line.DepositLineDetail.ClassRef;
+        } else {
+          line.DepositLineDetail = {
+            ...line.DepositLineDetail!,
+            ClassRef: await resolveClass(client, input.class_name),
+          };
+        }
       }
 
       finalLines.push(line);
@@ -520,8 +571,13 @@ export async function handleEditDeposit(
     if (wantsClearDept) {
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} \u2192 (cleared)`);
     }
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} \u2192 ${global_tax_calculation}`);
+    }
     previewLines.push('');
-    previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    if (global_tax_calculation === undefined) {
+      previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    }
 
     if (updated.Line) {
       previewLines.push('');
@@ -531,9 +587,12 @@ export async function handleEditDeposit(
         const detail = line.DepositLineDetail;
         if (detail) {
           const acctName = detail.AccountRef?.name || detail.AccountRef?.value || '(account)';
-          const deptStr = detail.ClassRef?.name ? ` [${detail.ClassRef.name}]` : '';
+          const tags: string[] = [];
+          if (detail.Entity?.name) tags.push(`entity: ${detail.Entity.name}`);
+          if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
+          const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
           const descStr = line.Description ? ` "${line.Description}"` : '';
-          previewLines.push(`  ${acctName}: $${line.Amount.toFixed(2)}${deptStr}${descStr}`);
+          previewLines.push(`  ${acctName}${tagStr}: $${line.Amount.toFixed(2)}${descStr}`);
           lineTotal += line.Amount;
         }
       }

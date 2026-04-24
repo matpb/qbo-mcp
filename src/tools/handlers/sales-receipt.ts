@@ -7,8 +7,12 @@ import {
   getDepartmentCache,
   resolveItem,
   resolveCustomer,
+  resolveClass,
+  resolveTaxCode,
 } from "../../client/index.js";
 import { validateAmount, toDollars, formatDollars, sumCents, outputReport, assertKnownKeys } from "../../utils/index.js";
+
+type GlobalTaxCalc = "TaxExcluded" | "TaxInclusive" | "NotApplicable";
 
 interface SalesReceiptLineChange {
   line_id?: string;
@@ -18,6 +22,8 @@ interface SalesReceiptLineChange {
   qty?: number;
   unit_price?: number;
   description?: string;
+  class_name?: string | null;
+  tax_code?: string | null;
   delete?: boolean;
 }
 
@@ -28,6 +34,8 @@ interface CreateSalesReceiptLine {
   qty?: number;
   unit_price?: number;
   description?: string;
+  class_name?: string;
+  tax_code?: string;
 }
 
 const CREATE_SR_KEYS = [
@@ -38,16 +46,20 @@ const CREATE_SR_KEYS = [
 
 const EDIT_SR_KEYS = [
   'id', 'txn_date', 'memo', 'deposit_to_account',
-  'department_name', 'lines', 'draft',
+  'department_name', 'global_tax_calculation', 'lines', 'draft',
 ] as const;
 
 const CREATE_SR_LINE_KEYS = [
   'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description',
+  'class_name', 'tax_code',
 ] as const;
 
 const SR_LINE_CHANGE_KEYS = [
-  'line_id', 'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description', 'delete',
+  'line_id', 'item_name', 'item_id', 'amount', 'qty', 'unit_price', 'description',
+  'class_name', 'tax_code', 'delete',
 ] as const;
+
+const GLOBAL_TAX_CALC_VALUES = new Set<GlobalTaxCalc>(['TaxExcluded', 'TaxInclusive', 'NotApplicable']);
 
 export async function handleCreateSalesReceipt(
   client: QuickBooks,
@@ -149,6 +161,9 @@ export async function handleCreateSalesReceipt(
       amountCents = upCents * qty;
     }
 
+    const classRef = line.class_name ? await resolveClass(client, line.class_name) : undefined;
+    const taxCodeRef = line.tax_code ? await resolveTaxCode(client, line.tax_code) : undefined;
+
     return {
       itemRef,
       qty,
@@ -156,6 +171,8 @@ export async function handleCreateSalesReceipt(
       amountCents,
       amountDollars: toDollars(amountCents),
       description: line.description,
+      classRef,
+      taxCodeRef,
     };
   }));
 
@@ -178,6 +195,8 @@ export async function handleCreateSalesReceipt(
         ItemRef: line.itemRef,
         Qty: line.qty,
         UnitPrice: line.unitPriceDollars,
+        ...(line.classRef && { ClassRef: line.classRef }),
+        ...(line.taxCodeRef && { TaxCodeRef: line.taxCodeRef }),
       },
     })),
   };
@@ -310,12 +329,17 @@ export async function handleEditSalesReceipt(
     memo?: string;
     deposit_to_account?: string;
     department_name?: string | null;
+    global_tax_calculation?: GlobalTaxCalc;
     lines?: SalesReceiptLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   assertKnownKeys(args as Record<string, unknown>, EDIT_SR_KEYS, 'edit_sales_receipt');
-  const { id, txn_date, memo, deposit_to_account, department_name, lines: lineChanges, draft = true } = args;
+  const { id, txn_date, memo, deposit_to_account, department_name, global_tax_calculation, lines: lineChanges, draft = true } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (lineChanges) {
     lineChanges.forEach((change, idx) =>
@@ -385,6 +409,7 @@ export async function handleEditSalesReceipt(
 
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
+  if (global_tax_calculation !== undefined) updated.GlobalTaxCalculation = global_tax_calculation;
 
   // Resolve deposit_to_account if provided (needs account cache)
   if (deposit_to_account !== undefined) {
@@ -431,6 +456,7 @@ export async function handleEditSalesReceipt(
             Qty?: number;
             UnitPrice?: number;
             ItemAccountRef?: { value: string; name?: string };
+            ClassRef?: { value: string; name?: string };
             TaxCodeRef?: { value: string; name?: string };
           };
 
@@ -443,6 +469,20 @@ export async function handleEditSalesReceipt(
             }
           }
           if (change.description !== undefined) line.Description = change.description;
+          if (change.class_name !== undefined) {
+            if (change.class_name === null || change.class_name === '') {
+              delete detail.ClassRef;
+            } else {
+              detail.ClassRef = await resolveClass(client, change.class_name);
+            }
+          }
+          if (change.tax_code !== undefined) {
+            if (change.tax_code === null || change.tax_code === '') {
+              delete detail.TaxCodeRef;
+            } else {
+              detail.TaxCodeRef = await resolveTaxCode(client, change.tax_code);
+            }
+          }
 
           line.SalesItemLineDetail = detail as typeof line.SalesItemLineDetail;
           line.DetailType = 'SalesItemLineDetail';
@@ -473,6 +513,11 @@ export async function handleEditSalesReceipt(
           amountCents = upCents * qty;
         }
 
+        const classRef = typeof change.class_name === 'string' && change.class_name.length > 0
+          ? await resolveClass(client, change.class_name) : undefined;
+        const taxCodeRef = typeof change.tax_code === 'string' && change.tax_code.length > 0
+          ? await resolveTaxCode(client, change.tax_code) : undefined;
+
         const newLine = {
           DetailType: 'SalesItemLineDetail',
           Amount: toDollars(amountCents),
@@ -481,6 +526,8 @@ export async function handleEditSalesReceipt(
             ItemRef: itemRef,
             Qty: qty,
             UnitPrice: unitPriceDollars,
+            ...(classRef && { ClassRef: classRef }),
+            ...(taxCodeRef && { TaxCodeRef: taxCodeRef }),
           },
         } as typeof finalLines[0];
         finalLines.push(newLine);
@@ -515,8 +562,13 @@ export async function handleEditSalesReceipt(
     if (wantsClearDept) {
       previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → (cleared)`);
     }
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} → ${global_tax_calculation}`);
+    }
     previewLines.push('');
-    previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    if (global_tax_calculation === undefined) {
+      previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    }
 
     if (updated.Line) {
       previewLines.push('');
@@ -525,8 +577,12 @@ export async function handleEditSalesReceipt(
         const detail = line.SalesItemLineDetail;
         if (detail) {
           const itemName = detail.ItemRef?.name || detail.ItemRef?.value || '(item)';
+          const tags: string[] = [];
+          if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
+          if (detail.TaxCodeRef?.name) tags.push(`tax: ${detail.TaxCodeRef.name}`);
+          const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
           const descStr = line.Description ? ` "${line.Description}"` : '';
-          previewLines.push(`  ${itemName}: $${line.Amount.toFixed(2)}${descStr}`);
+          previewLines.push(`  ${itemName}${tagStr}: $${line.Amount.toFixed(2)}${descStr}`);
         }
       }
     }

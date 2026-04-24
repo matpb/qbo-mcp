@@ -10,6 +10,9 @@ import {
 } from "../../client/index.js";
 import { validateAmount, toDollars, formatDollars, sumCents, outputReport, assertKnownKeys } from "../../utils/index.js";
 
+type GlobalTaxCalc = "TaxExcluded" | "TaxInclusive" | "NotApplicable";
+const GLOBAL_TAX_CALC_VALUES = new Set<GlobalTaxCalc>(['TaxExcluded', 'TaxInclusive', 'NotApplicable']);
+
 interface InvoiceLineChange {
   line_id?: string;
   item_name?: string;
@@ -40,7 +43,7 @@ const CREATE_INVOICE_KEYS = [
 const EDIT_INVOICE_KEYS = [
   'id', 'txn_date', 'due_date', 'memo', 'customer_memo', 'bill_email',
   'sales_term_ref', 'allow_online_credit_card_payment', 'allow_online_ach_payment',
-  'customer_name', 'department_name', 'doc_number', 'lines', 'draft',
+  'customer_name', 'department_name', 'global_tax_calculation', 'doc_number', 'lines', 'draft',
 ] as const;
 
 const CREATE_INVOICE_LINE_KEYS = [
@@ -368,6 +371,7 @@ export async function handleEditInvoice(
     allow_online_ach_payment?: boolean;
     customer_name?: string;
     department_name?: string | null;
+    global_tax_calculation?: GlobalTaxCalc;
     doc_number?: string;
     lines?: InvoiceLineChange[];
     draft?: boolean;
@@ -377,8 +381,12 @@ export async function handleEditInvoice(
   const {
     id, txn_date, due_date, memo, customer_memo, bill_email,
     sales_term_ref, allow_online_credit_card_payment, allow_online_ach_payment,
-    customer_name, department_name, doc_number, lines: lineChanges, draft = true,
+    customer_name, department_name, global_tax_calculation, doc_number, lines: lineChanges, draft = true,
   } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (lineChanges) {
     lineChanges.forEach((change, idx) =>
@@ -461,6 +469,7 @@ export async function handleEditInvoice(
   }
 
   if (doc_number !== undefined) updated.DocNumber = doc_number;
+  if (global_tax_calculation !== undefined) updated.GlobalTaxCalculation = global_tax_calculation;
 
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (due_date !== undefined) updated.DueDate = due_date;
@@ -615,8 +624,13 @@ export async function handleEditInvoice(
     }
     if (wantsClearDept) previewLines.push(`  Department: ${current.DepartmentRef?.name || '(none)'} → (cleared)`);
     if (doc_number !== undefined) previewLines.push(`  Ref no.: ${current.DocNumber || '(none)'} → ${doc_number}`);
+    if (global_tax_calculation !== undefined) previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} → ${global_tax_calculation}`);
     previewLines.push('');
-    previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+    } else {
+      previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    }
 
     if (updated.Line) {
       previewLines.push('');

@@ -20,6 +20,8 @@ import {
 } from "../../utils/index.js";
 
 type BillableStatus = "Billable" | "NotBillable" | "HasBeenBilled";
+type GlobalTaxCalc = "TaxExcluded" | "TaxInclusive" | "NotApplicable";
+const GLOBAL_TAX_CALC_VALUES = new Set<GlobalTaxCalc>(['TaxExcluded', 'TaxInclusive', 'NotApplicable']);
 
 interface CreateExpenseLine {
   account_id?: string;
@@ -66,7 +68,7 @@ const CREATE_EXPENSE_KEYS = [
 const EDIT_EXPENSE_KEYS = [
   'id', 'txn_date', 'memo', 'payment_account',
   'department_name', 'entity_name', 'entity_id', 'vendor_name', 'vendor_id',
-  'doc_number', 'lines', 'draft',
+  'global_tax_calculation', 'doc_number', 'lines', 'draft',
 ] as const;
 
 type LineDetail = {
@@ -404,6 +406,7 @@ export async function handleEditExpense(
     entity_id?: string | null;
     vendor_name?: string | null;
     vendor_id?: string | null;
+    global_tax_calculation?: GlobalTaxCalc;
     doc_number?: string;
     lines?: ExpenseLineChange[];
     draft?: boolean;
@@ -412,9 +415,13 @@ export async function handleEditExpense(
   assertKnownKeys(args as Record<string, unknown>, EDIT_EXPENSE_KEYS, 'edit_expense');
   const {
     id, txn_date, memo, payment_account, department_name,
-    entity_name, entity_id, vendor_name, vendor_id, doc_number,
+    entity_name, entity_id, vendor_name, vendor_id, global_tax_calculation, doc_number,
     lines: lineChanges, draft = true,
   } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   // Accept vendor_* as an alias for entity_*
   const payeeName = entity_name ?? vendor_name;
@@ -487,6 +494,7 @@ export async function handleEditExpense(
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
   if (doc_number !== undefined) updated.DocNumber = doc_number;
+  if (global_tax_calculation !== undefined) updated.GlobalTaxCalculation = global_tax_calculation;
 
   // Resolve payment account if provided
   if (payment_account !== undefined) {
@@ -693,11 +701,15 @@ export async function handleEditExpense(
       headerRows.push(`  Vendor/Payee: ${current.EntityRef?.name || '(none)'} → ${newEntity}`);
     }
     if (wantsClearPayee) headerRows.push(`  Vendor/Payee: ${current.EntityRef?.name || '(none)'} → (cleared)`);
+    if (global_tax_calculation !== undefined) headerRows.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} → ${global_tax_calculation}`);
     if (headerRows.length === 0) previewLines.push('  (none)'); else previewLines.push(...headerRows);
 
     previewLines.push('');
-    previewLines.push('Tax calc (preserved):');
-    previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    if (global_tax_calculation !== undefined) {
+      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+    } else {
+      previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
+    }
 
     if (events.length > 0) {
       previewLines.push('');

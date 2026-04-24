@@ -21,8 +21,11 @@ const CREATE_JE_KEYS = [
 ] as const;
 
 const EDIT_JE_KEYS = [
-  'id', 'txn_date', 'memo', 'doc_number', 'lines', 'draft',
+  'id', 'txn_date', 'memo', 'doc_number', 'global_tax_calculation', 'lines', 'draft',
 ] as const;
+
+type GlobalTaxCalc = "TaxExcluded" | "TaxInclusive" | "NotApplicable";
+const GLOBAL_TAX_CALC_VALUES = new Set<GlobalTaxCalc>(['TaxExcluded', 'TaxInclusive', 'NotApplicable']);
 
 const CREATE_JE_LINE_KEYS = [
   'account_id', 'account_name', 'amount', 'posting_type',
@@ -332,12 +335,17 @@ export async function handleEditJournalEntry(
     txn_date?: string;
     memo?: string;
     doc_number?: string;
+    global_tax_calculation?: GlobalTaxCalc;
     lines?: JournalEntryLineChange[];
     draft?: boolean;
   }
 ): Promise<{ content: Array<{ type: string; text: string }> }> {
   assertKnownKeys(args as Record<string, unknown>, EDIT_JE_KEYS, 'edit_journal_entry');
-  const { id, txn_date, memo, doc_number, lines: lineChanges, draft = true } = args;
+  const { id, txn_date, memo, doc_number, global_tax_calculation, lines: lineChanges, draft = true } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (lineChanges) {
     lineChanges.forEach((change, idx) =>
@@ -401,6 +409,7 @@ export async function handleEditJournalEntry(
   if (txn_date !== undefined) updated.TxnDate = txn_date;
   if (memo !== undefined) updated.PrivateNote = memo;
   if (doc_number !== undefined) updated.DocNumber = doc_number;
+  if (global_tax_calculation !== undefined) updated.GlobalTaxCalculation = global_tax_calculation;
 
   // Process line changes if provided
   // Use updated.Line if available (for full updates with stripped read-only fields), else current.Line
