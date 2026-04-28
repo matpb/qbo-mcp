@@ -71,6 +71,13 @@ const EDIT_EXPENSE_KEYS = [
   'global_tax_calculation', 'doc_number', 'lines', 'draft',
 ] as const;
 
+// ProjectRef is at LINE level (not nested in detail), and it's server-managed:
+// QBO derives it from CustomerRef when CustomerRef points at a project (a
+// Customer row with IsProject=true). Direct API writes to Line.ProjectRef are
+// rejected. The bug-fix path (see handleEditExpense): always strip line-level
+// ProjectRef from the round-trip body so QBO re-derives it from the (possibly
+// new) CustomerRef. Otherwise QBO silently rejects customer changes that
+// conflict with a stale ProjectRef.
 type LineDetail = {
   AccountRef: { value: string; name?: string };
   DepartmentRef?: { value: string; name?: string };
@@ -204,6 +211,11 @@ export async function handleCreateExpense(
 
     const amountCents = validateAmount(line.amount, `Line ${accountName || accountId}`);
 
+    // customer_id can point at either a customer or a project (QBO projects
+    // are Customer rows with IsProject=true). When pointed at a project, QBO
+    // auto-fills line-level ProjectRef on its side — there's no separate
+    // ProjectRef field to set on the line. Use list_projects to discover
+    // project IDs.
     const customerInput = line.customer_id || line.customer_name;
     const customerRef = customerInput ? await resolveCustomer(client, customerInput) : undefined;
     const classRef = line.class_name ? await resolveClass(client, line.class_name) : undefined;
@@ -344,6 +356,7 @@ export async function handleGetExpense(
         Qty?: number;
         UnitPrice?: number;
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
   const qboUrl = `https://app.qbo.intuit.com/app/expense?txnId=${expense.Id}`;
@@ -374,6 +387,7 @@ export async function handleGetExpense(
       const tags: string[] = [];
       if (detail.DepartmentRef?.name) tags.push(`dept: ${detail.DepartmentRef.name}`);
       if (detail.CustomerRef?.name) tags.push(`cust: ${detail.CustomerRef.name}`);
+      if (line.ProjectRef?.value) tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
       if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
       if (detail.TaxCodeRef?.name) tags.push(`tax: ${detail.TaxCodeRef.name}`);
       if (detail.BillableStatus && detail.BillableStatus !== 'NotBillable') tags.push(detail.BillableStatus);
@@ -454,6 +468,7 @@ export async function handleEditExpense(
       Description?: string;
       DetailType: string;
       AccountBasedExpenseLineDetail?: LineDetail;
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
 
@@ -484,9 +499,14 @@ export async function handleEditExpense(
     if (current.AccountRef) updated.AccountRef = current.AccountRef;
     if (current.EntityRef && !wantsClearPayee) updated.EntityRef = current.EntityRef;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
-    // Copy lines and strip read-only fields
+    // Copy lines and strip read-only / server-managed fields. ProjectRef is
+    // line-level and server-derived from CustomerRef when CustomerRef points
+    // at a project. Carrying a stale ProjectRef into a customer change makes
+    // QBO silently reject the customer change ("Cannot change customer to X
+    // while ProjectRef Y is set"). Always strip; QBO re-derives from the
+    // (possibly new) detail.CustomerRef.
     updated.Line = current.Line.map(line => {
-      const { LineNum, ...rest } = line as Record<string, unknown>;
+      const { LineNum, ProjectRef, ...rest } = line as Record<string, unknown>;
       return rest;
     });
   }
@@ -597,9 +617,15 @@ export async function handleEditExpense(
           const nextAcct = resolveAcct(change.account_name);
           if (nextAcct.value !== detail.AccountRef?.value) { detail.AccountRef = nextAcct; changedKeys.push('account_name'); } else { noopKeys.push('account_name'); }
         }
-        // Ref clears: assign explicit null (not delete). QBO treats missing
-        // nested refs as "keep existing"; only explicit null actually clears.
-        const customerInput = change.customer_id ?? change.customer_name;
+        // Ref clears: assign explicit null (not delete) for CustomerRef /
+        // ClassRef / TaxCodeRef. QBO treats missing nested refs as "keep
+        // existing"; only explicit null actually clears those three.
+        // (Line-level ProjectRef is server-derived and was already stripped
+        // when we copied current.Line above.)
+        // Use `in` to distinguish "explicit null" from "absent" — `??` would
+        // collapse `customer_id: null` (with customer_name absent) into
+        // undefined and skip the clear path entirely.
+        const customerInput = 'customer_id' in change ? change.customer_id : change.customer_name;
         if (customerInput === null || customerInput === '') {
           if (detail.CustomerRef != null) { detail.CustomerRef = null; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
         } else if (typeof customerInput === 'string') {
@@ -637,7 +663,7 @@ export async function handleEditExpense(
 
         const amountCents = validateAmount(change.amount, `New line for ${change.account_name}`);
 
-        const customerInput = change.customer_id ?? change.customer_name;
+        const customerInput = 'customer_id' in change ? change.customer_id : change.customer_name;
         const customerRef = typeof customerInput === 'string' && customerInput.length > 0
           ? await resolveCustomer(client, customerInput) : undefined;
         const classRef = typeof change.class_name === 'string' && change.class_name.length > 0

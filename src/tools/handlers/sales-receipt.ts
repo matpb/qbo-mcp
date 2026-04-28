@@ -280,6 +280,7 @@ export async function handleGetSalesReceipt(
         ClassRef?: { value: string; name?: string };
         TaxCodeRef?: { value: string; name?: string };
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
   const qboUrl = `https://app.qbo.intuit.com/app/salesreceipt?txnId=${salesReceipt.Id}`;
@@ -312,6 +313,9 @@ export async function handleGetSalesReceipt(
       if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
       if (detail.TaxCodeRef?.name || detail.TaxCodeRef?.value) {
         tags.push(`tax: ${detail.TaxCodeRef.name || detail.TaxCodeRef.value}`);
+      }
+      if (line.ProjectRef?.value) {
+        tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
       }
       const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
       const descStr = line.Description ? ` "${line.Description}"` : '';
@@ -380,6 +384,7 @@ export async function handleEditSalesReceipt(
         ClassRef?: { value: string; name?: string };
         TaxCodeRef?: { value: string; name?: string };
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
 
@@ -406,9 +411,12 @@ export async function handleEditSalesReceipt(
     if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
     if (current.DepositToAccountRef) updated.DepositToAccountRef = current.DepositToAccountRef;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
-    // Copy lines and strip read-only fields
+    // Copy lines and strip read-only / server-managed fields. Stripping
+    // line-level ProjectRef is critical: QBO derives it from header CustomerRef
+    // (when CustomerRef points at a project) and a stale ProjectRef silently
+    // rejects customer changes — see expense.ts for the long explanation.
     updated.Line = current.Line.map(line => {
-      const { LineNum, ...rest } = line as Record<string, unknown>;
+      const { LineNum, ProjectRef, ...rest } = line as Record<string, unknown>;
       return rest;
     });
   }
@@ -475,8 +483,8 @@ export async function handleEditSalesReceipt(
             }
           }
           if (change.description !== undefined) line.Description = change.description;
-          // Ref clears: assign explicit null. QBO keeps nested refs that are
-          // absent from the payload; null is the signal to actually clear.
+          // Ref clears: assign explicit null for ClassRef / TaxCodeRef — null
+          // is the signal to clear; absence keeps the existing ref.
           if (change.class_name !== undefined) {
             if (change.class_name === null || change.class_name === '') {
               detail.ClassRef = null;

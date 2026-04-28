@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "qbo-mcp",
   "display_name": "QuickBooks Online",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "Query and manage QuickBooks Online through Claude — accounts, transactions, invoices, bills, customers, vendors, reports (P&L, balance sheet, trial balance).",
   "long_description": "Local MCP server that wraps Intuit's QuickBooks Online API. Uses an automatic browser-based OAuth flow on first use — no copy-paste of tokens. Credentials and tokens are stored only on your machine at ~/.quickbooks-mcp/credentials.json.",
   "author": {

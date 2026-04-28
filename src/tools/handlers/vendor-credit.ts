@@ -70,6 +70,8 @@ const VC_LINE_CHANGE_KEYS = [
   'delete',
 ] as const;
 
+// ProjectRef is line-level and server-managed — see expense.ts for the long
+// explanation. Bug-fix path: strip line.ProjectRef on round-trip.
 type LineDetail = {
   AccountRef: { value: string; name?: string };
   DepartmentRef?: { value: string; name?: string };
@@ -310,6 +312,7 @@ export async function handleGetVendorCredit(
       Description?: string;
       DetailType: string;
       AccountBasedExpenseLineDetail?: LineDetail;
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
   const qboUrl = `https://app.qbo.intuit.com/app/vendorcredit?txnId=${vc.Id}`;
@@ -338,6 +341,7 @@ export async function handleGetVendorCredit(
       const tags: string[] = [];
       if (detail.DepartmentRef?.name) tags.push(`dept: ${detail.DepartmentRef.name}`);
       if (detail.CustomerRef?.name) tags.push(`cust: ${detail.CustomerRef.name}`);
+      if (line.ProjectRef?.value) tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
       if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
       if (detail.TaxCodeRef?.name) tags.push(`tax: ${detail.TaxCodeRef.name}`);
       if (detail.BillableStatus && detail.BillableStatus !== 'NotBillable') tags.push(detail.BillableStatus);
@@ -398,6 +402,7 @@ export async function handleEditVendorCredit(
       Description?: string;
       DetailType: string;
       AccountBasedExpenseLineDetail?: LineDetail;
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
 
@@ -423,8 +428,10 @@ export async function handleEditVendorCredit(
     if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
     if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
+    // Strip line-level ProjectRef along with read-only LineNum — see expense.ts
+    // for the full explanation. ProjectRef is server-derived from CustomerRef.
     updated.Line = current.Line.map(line => {
-      const { LineNum, ...rest } = line as Record<string, unknown>;
+      const { LineNum, ProjectRef, ...rest } = line as Record<string, unknown>;
       return rest;
     });
   }
@@ -513,9 +520,10 @@ export async function handleEditVendorCredit(
           const nextAcct = resolveAcct(change.account_name);
           if (nextAcct.value !== detail.AccountRef?.value) { detail.AccountRef = nextAcct; changedKeys.push('account_name'); } else { noopKeys.push('account_name'); }
         }
-        // Ref clears: assign explicit null (not delete). QBO treats missing
-        // nested refs as "keep existing"; only explicit null actually clears.
-        const customerInput = change.customer_id ?? change.customer_name;
+        // Ref clears: assign explicit null (not delete) for CustomerRef /
+        // ClassRef / TaxCodeRef — only explicit null clears. (Line-level
+        // ProjectRef was stripped when we copied current.Line above.)
+        const customerInput = "customer_id" in change ? change.customer_id : change.customer_name;
         if (customerInput === null || customerInput === '') {
           if (detail.CustomerRef != null) { detail.CustomerRef = null; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
         } else if (typeof customerInput === 'string') {
@@ -553,7 +561,7 @@ export async function handleEditVendorCredit(
 
         const amountCents = validateAmount(change.amount, `New line for ${change.account_name}`);
 
-        const customerInput = change.customer_id ?? change.customer_name;
+        const customerInput = "customer_id" in change ? change.customer_id : change.customer_name;
         const customerRef = typeof customerInput === 'string' && customerInput.length > 0
           ? await resolveCustomer(client, customerInput) : undefined;
         const classRef = typeof change.class_name === 'string' && change.class_name.length > 0

@@ -275,6 +275,7 @@ export async function handleGetJournalEntry(
         AccountRef: { value: string; name?: string };
         DepartmentRef?: { value: string; name?: string };
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
   const qboUrl = `https://app.qbo.intuit.com/app/journal?txnId=${je.Id}`;
@@ -316,10 +317,13 @@ export async function handleGetJournalEntry(
     const detail = line.JournalEntryLineDetail;
     if (!detail) continue;
     const acctName = detail.AccountRef.name || detail.AccountRef.value;
+    const tags: string[] = [];
     const deptName = detail.DepartmentRef?.name || detail.DepartmentRef?.value;
-    const deptStr = deptName ? ` [${deptName}]` : '';
+    if (deptName) tags.push(deptName);
+    if (line.ProjectRef?.value) tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
+    const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
     const descStr = line.Description ? ` "${line.Description}"` : '';
-    lines.push(`  Line ${line.Id}: ${detail.PostingType.padEnd(6)} ${acctName}${deptStr} $${line.Amount.toFixed(2)}${descStr}`);
+    lines.push(`  Line ${line.Id}: ${detail.PostingType.padEnd(6)} ${acctName}${tagStr} $${line.Amount.toFixed(2)}${descStr}`);
   }
 
   lines.push('');
@@ -374,6 +378,7 @@ export async function handleEditJournalEntry(
         AccountRef: { value: string; name?: string };
         DepartmentRef?: { value: string; name?: string };
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
 
@@ -398,9 +403,10 @@ export async function handleEditJournalEntry(
     updated.DocNumber = current.DocNumber;
     if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
     if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
-    // Copy lines and strip read-only fields
+    // Copy lines and strip read-only / server-managed fields. Line-level
+    // ProjectRef is server-managed (see expense.ts).
     updated.Line = current.Line.map(line => {
-      const { LineNum, ...rest } = line as Record<string, unknown>;
+      const { LineNum, ProjectRef, ...rest } = line as Record<string, unknown>;
       return rest;
     });
   }

@@ -1,6 +1,7 @@
 // Barrel export for client module
 
 export { promisify } from './promisify.js';
+export { qboRawRequest } from './raw-request.js';
 export {
   getClient,
   clearCredentialsCache,
@@ -14,6 +15,7 @@ export {
   getVendorCache,
   getClassCache,
   getTaxCodeCache,
+  getProjectCache,
   resolveAccount,
   resolveVendor,
   resolveItem,
@@ -21,4 +23,5 @@ export {
   resolveClass,
   resolveTaxCode,
   resolveDepartmentId,
+  resolveProject,
 } from './cache.js';

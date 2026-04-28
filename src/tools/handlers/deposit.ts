@@ -77,6 +77,9 @@ interface DepositLine {
     PaymentMethodRef?: { value: string; name?: string };
     CheckNum?: string;
   };
+  // ProjectRef is at LINE level (not in detail) and server-managed by QBO.
+  // We strip it on round-trip; QBO re-derives it from line entity/customer.
+  ProjectRef?: { value: string; name?: string };
 }
 
 interface Deposit {
@@ -332,9 +335,12 @@ export async function handleGetDeposit(
       const entityStr = detail.Entity?.name
         ? ` from ${detail.Entity.type || 'Entity'}: ${detail.Entity.name}`
         : '';
-      const deptStr = detail.ClassRef?.name ? ` [${detail.ClassRef.name}]` : '';
+      const tags: string[] = [];
+      if (detail.ClassRef?.name) tags.push(detail.ClassRef.name);
+      if (line.ProjectRef?.value) tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
+      const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
       const descStr = line.Description ? ` "${line.Description}"` : '';
-      lines.push(`  Line ${line.Id}: ${acctName} $${line.Amount.toFixed(2)}${entityStr}${deptStr}${descStr}`);
+      lines.push(`  Line ${line.Id}: ${acctName} $${line.Amount.toFixed(2)}${entityStr}${tagStr}${descStr}`);
     }
   }
 
@@ -413,9 +419,10 @@ export async function handleEditDeposit(
     if ((current as unknown as Record<string, unknown>).CurrencyRef) {
       updated.CurrencyRef = (current as unknown as Record<string, unknown>).CurrencyRef;
     }
-    // Copy lines and strip read-only fields
+    // Copy lines and strip read-only / server-managed fields. Line-level
+    // ProjectRef is server-derived from line entity (see expense.ts).
     updated.Line = (current.Line || []).map(line => {
-      const { LineNum, CustomExtensions, ...rest } = line as unknown as Record<string, unknown>;
+      const { LineNum, CustomExtensions, ProjectRef, ...rest } = line as unknown as Record<string, unknown>;
       return rest;
     });
   }
@@ -511,7 +518,9 @@ export async function handleEditDeposit(
       // and null clears cleanly — so this workaround is scoped to deposit
       // only. (Probe: probe-deposit-entity-clear.mjs)
       const CLEAR = { value: '0' };
-      const entityInput = input.entity_id ?? input.entity_name;
+      // Use `in` to distinguish explicit-null from absent (`??` would collapse
+      // `entity_id: null` with entity_name absent into undefined).
+      const entityInput = 'entity_id' in input ? input.entity_id : input.entity_name;
       if (entityInput === null || entityInput === '') {
         line.DepositLineDetail = {
           ...line.DepositLineDetail!,
@@ -610,6 +619,7 @@ export async function handleEditDeposit(
           const tags: string[] = [];
           if (detail.Entity?.name) tags.push(`entity: ${detail.Entity.name}`);
           if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
+          if (line.ProjectRef?.value) tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
           const tagStr = tags.length ? ` [${tags.join(', ')}]` : '';
           const descStr = line.Description ? ` "${line.Description}"` : '';
           previewLines.push(`  ${acctName}${tagStr}: $${line.Amount.toFixed(2)}${descStr}`);

@@ -71,6 +71,10 @@ const CREATE_BILL_KEYS = [
   'memo', 'doc_number', 'lines', 'draft',
 ] as const;
 
+// ProjectRef is at LINE level (not nested in detail) and server-managed.
+// See expense.ts for the long explanation; the bill handler follows the same
+// pattern: strip line.ProjectRef on round-trip so QBO re-derives it from the
+// (possibly new) detail.CustomerRef.
 type LineDetail = {
   AccountRef: { value: string; name?: string };
   DepartmentRef?: { value: string; name?: string };
@@ -346,6 +350,7 @@ export async function handleGetBill(
         Qty?: number;
         UnitPrice?: number;
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
   const qboUrl = `https://app.qbo.intuit.com/app/bill?txnId=${bill.Id}`;
@@ -376,6 +381,7 @@ export async function handleGetBill(
       const tags: string[] = [];
       if (detail.DepartmentRef?.name) tags.push(`dept: ${detail.DepartmentRef.name}`);
       if (detail.CustomerRef?.name) tags.push(`cust: ${detail.CustomerRef.name}`);
+      if (line.ProjectRef?.value) tags.push(`project: ${line.ProjectRef.name || line.ProjectRef.value}`);
       if (detail.ClassRef?.name) tags.push(`class: ${detail.ClassRef.name}`);
       if (detail.TaxCodeRef?.name) tags.push(`tax: ${detail.TaxCodeRef.name}`);
       if (detail.BillableStatus && detail.BillableStatus !== 'NotBillable') tags.push(detail.BillableStatus);
@@ -446,6 +452,7 @@ export async function handleEditBill(
       Description?: string;
       DetailType: string;
       AccountBasedExpenseLineDetail?: LineDetail;
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
 
@@ -485,9 +492,12 @@ export async function handleEditBill(
     if (current.DepartmentRef && !wantsClearDept) {
       updated.DepartmentRef = current.DepartmentRef;
     }
-    // Copy lines and strip read-only fields
+    // Copy lines and strip read-only / server-managed fields. Stripping
+    // line-level ProjectRef is critical: QBO derives it from CustomerRef when
+    // CustomerRef points at a project, and a stale ProjectRef silently rejects
+    // customer changes ("invisible" 200 OK that didn't change anything).
     updated.Line = current.Line.map(line => {
-      const { LineNum, ...rest } = line as Record<string, unknown>;
+      const { LineNum, ProjectRef, ...rest } = line as Record<string, unknown>;
       return rest;
     });
   }
@@ -572,10 +582,12 @@ export async function handleEditBill(
             noopKeys.push('account_name');
           }
         }
-        // Customer: null or empty string clears; string value sets; undefined leaves alone.
-        // Ref clears: assign explicit null (not delete). QBO treats missing
-        // nested refs as "keep existing"; only explicit null actually clears.
-        const customerInput = change.customer_id ?? change.customer_name;
+        // Customer: null or empty string clears; string value sets; undefined
+        // leaves alone. Ref clears: assign explicit null (not delete) for
+        // CustomerRef / ClassRef / TaxCodeRef — only explicit null clears.
+        // (Line-level ProjectRef was stripped when we copied current.Line
+        // above; QBO will re-derive it from the new CustomerRef.)
+        const customerInput = "customer_id" in change ? change.customer_id : change.customer_name;
         if (customerInput === null || customerInput === '') {
           if (detail.CustomerRef != null) { detail.CustomerRef = null; changedKeys.push('customer'); } else { noopKeys.push('customer'); }
         } else if (typeof customerInput === 'string') {
@@ -613,7 +625,7 @@ export async function handleEditBill(
 
         const amountCents = validateAmount(change.amount, `New line for ${change.account_name}`);
 
-        const customerInput = change.customer_id ?? change.customer_name;
+        const customerInput = "customer_id" in change ? change.customer_id : change.customer_name;
         const customerRef = typeof customerInput === 'string' && customerInput.length > 0
           ? await resolveCustomer(client, customerInput) : undefined;
         const classRef = typeof change.class_name === 'string' && change.class_name.length > 0

@@ -19,3 +19,6 @@ dev-credentials.json
 
 # Per-dev Claude Code MCP config (may hold local paths / env); keep local
 .mcp.json
+
+# Local-only test plans / scratch docs
+docs/

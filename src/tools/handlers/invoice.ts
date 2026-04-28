@@ -300,6 +300,7 @@ export async function handleGetInvoice(
         ClassRef?: { value: string; name?: string };
         TaxCodeRef?: { value: string; name?: string };
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
   const qboUrl = `https://app.qbo.intuit.com/app/invoice?txnId=${invoice.Id}`;
@@ -344,8 +345,9 @@ export async function handleGetInvoice(
       const qty = detail.Qty ?? 1;
       const unitPrice = detail.UnitPrice ?? line.Amount;
       const acctStr = detail.ItemAccountRef?.name ? ` → ${detail.ItemAccountRef.name}` : '';
+      const projectStr = line.ProjectRef?.value ? ` [project: ${line.ProjectRef.name || line.ProjectRef.value}]` : '';
       const descStr = line.Description ? ` "${line.Description}"` : '';
-      lines.push(`  Line ${line.Id}: ${itemName} (Qty: ${qty} × $${unitPrice.toFixed(2)}) = $${line.Amount.toFixed(2)}${acctStr}${descStr}`);
+      lines.push(`  Line ${line.Id}: ${itemName} (Qty: ${qty} × $${unitPrice.toFixed(2)}) = $${line.Amount.toFixed(2)}${acctStr}${projectStr}${descStr}`);
     } else if (line.DetailType === 'SubTotalLineDetail') {
       lines.push(`  SubTotal: $${line.Amount.toFixed(2)}`);
     }
@@ -426,6 +428,7 @@ export async function handleEditInvoice(
         ClassRef?: { value: string; name?: string };
         TaxCodeRef?: { value: string; name?: string };
       };
+      ProjectRef?: { value: string; name?: string };
     }>;
   };
 
@@ -461,9 +464,12 @@ export async function handleEditInvoice(
     if (current.AllowOnlineACHPayment !== undefined) {
       updated.AllowOnlineACHPayment = current.AllowOnlineACHPayment;
     }
-    // Copy lines and strip read-only fields
+    // Copy lines and strip read-only / server-managed fields. ProjectRef is
+    // line-level and server-derived from header CustomerRef when CustomerRef
+    // points at a project; carrying a stale one silently rejects customer
+    // changes (see expense.ts).
     updated.Line = current.Line.map(line => {
-      const { LineNum, ...rest } = line as Record<string, unknown>;
+      const { LineNum, ProjectRef, ...rest } = line as Record<string, unknown>;
       return rest;
     });
   }

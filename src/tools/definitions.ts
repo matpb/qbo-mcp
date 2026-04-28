@@ -468,7 +468,7 @@ export const toolDefinitions = [
   },
   {
     name: "edit_bill",
-    description: "Modify an existing bill. Can update vendor, date, due date, memo, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. For lines: provide line_id to update existing line, omit to add new, set delete=true to remove. To clear a line's customer/class/tax code, pass null or empty string. To clear header DepartmentRef, pass department_name: null. Unknown parameters are rejected.",
+    description: "Modify an existing bill. Can update vendor, date, due date, memo, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. To assign a line to a project, point customer_id at the project's id (QBO projects are Customer rows with IsProject=true; the line's ProjectRef is server-derived). Use list_projects to discover project IDs. The MCP strips line-level ProjectRef on round-trip so QBO can re-derive it from the (possibly new) customer — this prevents QBO's silent-reject behavior when changing the customer on a line that previously had a project. For lines: provide line_id to update existing line, omit to add new, set delete=true to remove. To clear a line's customer/class/tax code, pass null or empty string. To clear header DepartmentRef, pass department_name: null. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -581,7 +581,7 @@ export const toolDefinitions = [
   },
   {
     name: "edit_expense",
-    description: "Modify an existing expense (Purchase). Can update date, memo, payment account, payee, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. Note: PaymentType (Cash/Check/CreditCard) cannot be changed after creation. vendor_name/vendor_id are accepted as aliases for entity_name/entity_id (the same QBO 'Payee' / Canadian 'Supplier' field). Pass null on department_name / entity_name / vendor_name to clear those header references. Unknown parameters are rejected.",
+    description: "Modify an existing expense (Purchase). Can update date, memo, payment account, payee, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. To assign a line to a project, point customer_id at the project's id (QBO projects are Customer rows with IsProject=true; the line's ProjectRef is server-derived). Use list_projects to discover project IDs. The MCP strips line-level ProjectRef on round-trip so QBO can re-derive it from the (possibly new) customer — this prevents QBO's silent-reject behavior when changing the customer on a line that previously had a project. Note: PaymentType (Cash/Check/CreditCard) cannot be changed after creation. vendor_name/vendor_id are accepted as aliases for entity_name/entity_id (the same QBO 'Payee' / Canadian 'Supplier' field). Pass null on department_name / entity_name / vendor_name to clear those header references. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -692,7 +692,7 @@ export const toolDefinitions = [
   },
   {
     name: "create_expense",
-    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Covers Cash, Check, and Credit Card payment types. vendor_name/vendor_id accepted as aliases for entity_name/entity_id. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Unknown parameters are rejected.",
+    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. To assign a line to a project, point customer_id at the project's id; QBO auto-fills line.ProjectRef. Use list_projects to discover project IDs. Covers Cash, Check, and Credit Card payment types. vendor_name/vendor_id accepted as aliases for entity_name/entity_id. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1110,7 +1110,7 @@ export const toolDefinitions = [
   },
   {
     name: "edit_invoice",
-    description: "Modify an existing invoice. Can update date, due date, memo, customer, department, terms, email, online payment settings, and/or lines. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
+    description: "Modify an existing invoice. Can update date, due date, memo, customer, department, terms, email, online payment settings, and/or lines. To assign a project to an invoice, point its header customer_id at the project's id (QBO projects are Customer rows with IsProject=true). Use list_projects to discover project IDs. The MCP strips line-level ProjectRef on round-trip so QBO can re-derive it from the (possibly new) header customer — this prevents QBO's silent-reject behavior when changing the invoice's customer. For lines: provide line_id to update existing line, omit line_id to add new line (requires item_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1500,7 +1500,7 @@ export const toolDefinitions = [
   },
   {
     name: "edit_vendor_credit",
-    description: "Modify an existing vendor credit. Can update vendor, date, memo, ref number, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. For lines: provide line_id to update existing line, omit line_id to add new line (requires amount and account_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
+    description: "Modify an existing vendor credit. Can update vendor, date, memo, ref number, department, and/or lines. Lines support per-line customer, class, tax code, and billable status. To assign a line to a project, point customer_id at the project's id; the line's ProjectRef is server-derived. Use list_projects to discover project IDs. The MCP strips line-level ProjectRef on round-trip so QBO can re-derive it from the (possibly new) customer — this prevents QBO's silent-reject behavior when changing the customer on a line that previously had a project. For lines: provide line_id to update existing line, omit line_id to add new line (requires amount and account_name), set delete=true to remove. Pass department_name: null to clear header department. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -1862,6 +1862,24 @@ export const toolDefinitions = [
         },
       },
       required: ["id"],
+    },
+  },
+  {
+    name: "list_projects",
+    description: "List QBO projects (Customer rows with IsProject=true) with their parent customers. Use this to discover project IDs and parent-customer mappings, especially when moving an expense/bill/invoice line to a new customer — the line's project must belong to (have its parent equal) the new customer or QBO silently rejects the change. QBO does not allow filtering on IsProject, so this tool fetches all customers and filters in memory; first call may be slow on large companies.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        active_only: {
+          type: "boolean",
+          description: "Exclude inactive projects (default: true).",
+        },
+        parent_customer: {
+          type: "string",
+          description: "Optional parent customer ID or display name. When set, only projects whose parent matches are returned.",
+        },
+      },
     },
   },
 ];

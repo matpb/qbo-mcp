@@ -7,12 +7,14 @@ import {
   CachedClass,
   CachedCustomer,
   CachedDepartment,
+  CachedProject,
   CachedTaxCode,
   CachedVendor,
   CachedItem,
   AccountCache,
   ClassCache,
   DepartmentCache,
+  ProjectCache,
   TaxCodeCache,
   VendorCache,
   QBQueryResponse,
@@ -27,6 +29,7 @@ let accountCache: AccountCache | null = null;
 let vendorCache: VendorCache | null = null;
 let classCache: ClassCache | null = null;
 let taxCodeCache: TaxCodeCache | null = null;
+let projectCache: ProjectCache | null = null;
 // Item cache: lazy per-entry lookup (not bulk-loaded like others)
 const itemCacheById = new Map<string, CachedItem>();
 const itemCacheByName = new Map<string, CachedItem>(); // lowercase key
@@ -40,6 +43,7 @@ export function clearLookupCache(): void {
   vendorCache = null;
   classCache = null;
   taxCodeCache = null;
+  projectCache = null;
   itemCacheById.clear();
   itemCacheByName.clear();
   customerCacheById.clear();
@@ -407,4 +411,88 @@ export async function resolveTaxCode(client: QuickBooks, nameOrId: string): Prom
   if (byPartial) return { value: byPartial.Id, name: byPartial.Name };
 
   throw new Error(`Tax code not found: "${nameOrId}". Try using the exact tax code name or ID.`);
+}
+
+// Project cache. Projects are Customer rows with IsProject=true; QBO does not
+// allow filtering on IsProject, so we fetch every customer and filter
+// in-memory. We also cache the parent customer ref per project, which is the
+// only way to validate "this line's customer matches this line's project".
+export async function getProjectCache(client: QuickBooks): Promise<ProjectCache> {
+  if (projectCache && (Date.now() - projectCache.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return projectCache;
+  }
+
+  type RawCustomer = {
+    Id: string;
+    DisplayName: string;
+    FullyQualifiedName?: string;
+    IsProject?: boolean;
+    ParentRef?: { value: string; name?: string };
+    Active?: boolean;
+  };
+
+  const result = await promisify<unknown>((cb) => client.findCustomers({ fetchAll: true }, cb));
+  const allCustomers = extractQueryResults<RawCustomer>(result, 'Customer');
+  const items: CachedProject[] = allCustomers
+    .filter((c): c is RawCustomer & { ParentRef: { value: string; name?: string } } =>
+      Boolean(c.IsProject && c.ParentRef && c.ParentRef.value)
+    )
+    .map((c) => ({
+      Id: c.Id,
+      DisplayName: c.DisplayName,
+      FullyQualifiedName: c.FullyQualifiedName,
+      ParentRef: c.ParentRef,
+      Active: c.Active,
+    }));
+
+  const byId = new Map<string, CachedProject>();
+  const byName = new Map<string, CachedProject>();
+  const byFqName = new Map<string, CachedProject>();
+  for (const p of items) {
+    byId.set(p.Id, p);
+    byName.set(p.DisplayName.toLowerCase(), p);
+    if (p.FullyQualifiedName) {
+      byFqName.set(p.FullyQualifiedName.toLowerCase(), p);
+    }
+  }
+
+  projectCache = { items, byId, byName, byFqName, fetchedAt: Date.now() };
+  return projectCache;
+}
+
+// Resolve a project by ID, DisplayName, FullyQualifiedName, or partial FQ
+// match. Returns the QBO ref shape plus the parent customer's ID/name so
+// callers can validate the line's customer matches the project's parent
+// (QBO will silently reject customer changes that conflict with an existing
+// ProjectRef).
+export async function resolveProject(
+  client: QuickBooks,
+  nameOrId: string
+): Promise<{ value: string; name: string; parentValue: string; parentName?: string }> {
+  const cache = await getProjectCache(client);
+
+  const toRef = (p: CachedProject) => ({
+    value: p.Id,
+    name: p.FullyQualifiedName || p.DisplayName,
+    parentValue: p.ParentRef.value,
+    parentName: p.ParentRef.name,
+  });
+
+  const byId = cache.byId.get(nameOrId);
+  if (byId) return toRef(byId);
+
+  const byFq = cache.byFqName.get(nameOrId.toLowerCase());
+  if (byFq) return toRef(byFq);
+
+  const byName = cache.byName.get(nameOrId.toLowerCase());
+  if (byName) return toRef(byName);
+
+  const byPartial = cache.items.find((p) =>
+    p.FullyQualifiedName?.toLowerCase().includes(nameOrId.toLowerCase())
+  );
+  if (byPartial) return toRef(byPartial);
+
+  throw new Error(
+    `Project not found: "${nameOrId}". Pass a project ID, exact DisplayName, or "Parent Customer:Project" FullyQualifiedName. Use list_projects to see available projects and their parent customers.`
+  );
 }

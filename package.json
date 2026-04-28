@@ -1,6 +1,6 @@
 {
   "name": "qbo-mcp",
-  "version": "0.4.3",
+  "version": "0.4.5",
   "description": "QuickBooks Online MCP server for Claude Desktop — local-first, auto-OAuth, packaged as .mcpb (forked from laf-rge/quickbooks-mcp)",
   "license": "MIT",
   "private": true,

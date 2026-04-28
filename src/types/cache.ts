@@ -90,3 +90,23 @@ export interface TaxCodeCache {
   byName: Map<string, CachedTaxCode>;      // lowercase key
   fetchedAt: number;
 }
+
+// Projects in QBO are Customer rows with IsProject=true and a ParentRef pointing
+// at the customer the project belongs to. IsProject and ParentRef are NOT
+// queryable on Customer, so the cache is built by fetching all customers and
+// filtering in memory.
+export interface CachedProject {
+  Id: string;
+  DisplayName: string;
+  FullyQualifiedName?: string;
+  ParentRef: { value: string; name?: string };
+  Active?: boolean;
+}
+
+export interface ProjectCache {
+  items: CachedProject[];
+  byId: Map<string, CachedProject>;
+  byName: Map<string, CachedProject>;      // lowercase key on DisplayName
+  byFqName: Map<string, CachedProject>;    // lowercase key on FullyQualifiedName
+  fetchedAt: number;
+}
