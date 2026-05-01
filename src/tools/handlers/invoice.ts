@@ -37,7 +37,7 @@ const CREATE_INVOICE_KEYS = [
   'txn_date', 'customer_name', 'customer_id', 'due_date',
   'department_name', 'department_id', 'memo', 'customer_memo', 'bill_email',
   'sales_term_ref', 'allow_online_credit_card_payment', 'allow_online_ach_payment',
-  'doc_number', 'lines', 'draft',
+  'doc_number', 'global_tax_calculation', 'lines', 'draft',
 ] as const;
 
 const EDIT_INVOICE_KEYS = [
@@ -70,6 +70,7 @@ export async function handleCreateInvoice(
     allow_online_credit_card_payment?: boolean;
     allow_online_ach_payment?: boolean;
     doc_number?: string;
+    global_tax_calculation?: GlobalTaxCalc;
     lines: CreateInvoiceLine[];
     draft?: boolean;
   }
@@ -80,8 +81,12 @@ export async function handleCreateInvoice(
     due_date, department_name, department_id,
     memo, customer_memo, bill_email, sales_term_ref,
     allow_online_credit_card_payment, allow_online_ach_payment,
-    doc_number, lines, draft = true,
+    doc_number, global_tax_calculation, lines, draft = true,
   } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
@@ -195,6 +200,7 @@ export async function handleCreateInvoice(
     ...(allow_online_credit_card_payment !== undefined && { AllowOnlineCreditCardPayment: allow_online_credit_card_payment }),
     ...(allow_online_ach_payment !== undefined && { AllowOnlineACHPayment: allow_online_ach_payment }),
     ...(doc_number && { DocNumber: doc_number }),
+    ...(global_tax_calculation && { GlobalTaxCalculation: global_tax_calculation }),
     Line: resolvedLines.map((line) => ({
       Amount: line.amountDollars,
       DetailType: "SalesItemLineDetail",
@@ -217,6 +223,7 @@ export async function handleCreateInvoice(
       `Terms: ${salesTermRef?.name || "(none)"}`,
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Tax Calc: ${global_tax_calculation || "(QBO default)"}`,
       `Memo: ${memo || "(none)"}`,
       `Customer Memo: ${customer_memo || "(none)"}`,
       `Bill Email: ${bill_email || "(none)"}`,
@@ -436,6 +443,11 @@ export async function handleEditInvoice(
   const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
   const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept;
 
+  // Drop TxnTaxDetail from the round-trip when line tax codes change or the
+  // header tax mode is overridden, so QBO recomputes server-side. See
+  // bill.ts / expense.ts for the long explanation of the [3060] failure mode.
+  const wantsTaxRecompute = (lineChanges && lineChanges.length > 0) || global_tax_calculation !== undefined;
+
   // Build updated Invoice
   const updated: Record<string, unknown> = {
     Id: current.Id,
@@ -452,7 +464,7 @@ export async function handleEditInvoice(
     updated.DocNumber = current.DocNumber;
     updated.PrivateNote = current.PrivateNote;
     if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
-    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.TxnTaxDetail && !wantsTaxRecompute) updated.TxnTaxDetail = current.TxnTaxDetail;
     if (current.CustomerRef) updated.CustomerRef = current.CustomerRef;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
     if (current.CustomerMemo) updated.CustomerMemo = current.CustomerMemo;
@@ -633,7 +645,9 @@ export async function handleEditInvoice(
     if (global_tax_calculation !== undefined) previewLines.push(`  GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'} → ${global_tax_calculation}`);
     previewLines.push('');
     if (global_tax_calculation !== undefined) {
-      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+      previewLines.push(`Tax calc (override + recompute): GlobalTaxCalculation → ${global_tax_calculation}; QBO will recompute TxnTaxDetail`);
+    } else if (wantsTaxRecompute) {
+      previewLines.push(`Tax calc (recompute): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}; QBO will recompute TxnTaxDetail from new lines`);
     } else {
       previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
     }

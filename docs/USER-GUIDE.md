@@ -103,6 +103,7 @@ These are limitations of the QuickBooks API or this particular integration:
 | **Estimates / Purchase Orders** | Not implemented in this integration |
 | **Attach documents** | Cannot upload receipts, PDFs, or images to transactions |
 | **Tax filings / tax forms** | Not accessible through the API |
+| **Tax setup (rates, agencies, codes)** | Creating, editing, or deleting `TaxRate`, `TaxAgency`, or `TaxCode` records is not exposed by this integration. Set up tax structure in the QBO UI first; once codes exist, Claude can apply them on lines and queries |
 | **Multi-department expense lines** | QuickBooks only allows one department per expense — if a charge covers multiple locations, Claude can create a journal entry to reclassify after the fact |
 | **Budgets** | Cannot read or set budgets |
 | **Recurring transactions** | Cannot create or manage scheduled/recurring transactions |
@@ -110,6 +111,45 @@ These are limitations of the QuickBooks API or this particular integration:
 | **Time tracking** | Not available through this integration |
 | **Bill payments** | Cannot record payments made to vendors |
 | **Transfers between accounts** | Not directly supported (use a journal entry instead) |
+
+---
+
+## Sales Tax / GST/HST Handling
+
+Sales tax is the trickiest part of QBO and the integration has a few things worth knowing.
+
+### How tax shows up on a transaction
+
+Every taxable transaction has two layers:
+
+1. **Per-line `TaxCodeRef`** — picks WHICH tax code each line uses (e.g. "GST 5%", "HST ON", a custom half-rate for PSB rebates).
+2. **Header `GlobalTaxCalculation`** — controls HOW the line amount relates to the tax: `TaxExcluded` (line is pre-tax, tax is added on top), `TaxInclusive` (line includes tax, tax is backed out), or `NotApplicable` (no tax tracked even if line tax codes are present).
+
+When you ask Claude to create a bill/expense/sales receipt/invoice on a tax-tracking company, **explicitly pass `global_tax_calculation`** ("TaxExcluded" is the most common). If you don't, QBO defaults API-created transactions to `NotApplicable` — they won't track tax even if the line tax codes look right, and they'll appear as "out of scope" in QBO.
+
+### Editing tax codes after the fact
+
+When you change a line's tax code (or override `global_tax_calculation`) on an existing bill/expense/etc., the integration drops the stored `TxnTaxDetail` from the request so QBO recomputes the tax server-side from the new lines. This matches what the QBO UI does on save.
+
+The reason: QBO stores tax line totals in a header `TxnTaxDetail.TaxLine[]`, and those references go stale the moment you change a line's tax code. Older versions of this integration would echo back the stale `TxnTaxDetail`, causing QBO to reject the update with `[3060] Invalid Tax Rate id` — most often when the existing line was on the system "Exempt" code (id 3) and you tried to change it to a real rate. That class of error is fixed now: any line tax-code change or global-tax-calculation override forces a recompute.
+
+### Auditing a tax-tracking account
+
+If you query transactions on a tax-tracking account (GST/HST Payable, ITC Receivable, PSB rebate, etc.), pass **`include_tax_lines=true`**. The default account-transactions query walks raw entity bodies and only sees `Line.AccountRef` postings — it MISSES `TxnTaxDetail.TaxLine[]` entries, which are exactly the postings you care about on a tax account. With the flag on, Claude additionally pulls the General Ledger detail report and merges any postings the entity walk missed (typically tax-line entries, but also Sales Tax Payment entities and Transfers).
+
+You'll see something like:
+
+> Tax-line augmentation: +12 postings from GL (47 GL rows total).
+
+### Recompute visibility
+
+When Claude is editing and the integration knows tax will recompute, the draft preview shows it explicitly:
+
+- `Tax calc (preserved)` — no tax-affecting change; QBO keeps stored values.
+- `Tax calc (recompute)` — line tax code changed; QBO will recompute `TxnTaxDetail`.
+- `Tax calc (override + recompute)` — `global_tax_calculation` was passed AND QBO will recompute.
+
+If the math doesn't match what you expected after a save, the most common cause is a `global_tax_calculation` mismatch (e.g., a half-rate code applied at 2.5% gives different output in `TaxExcluded` vs `TaxInclusive` mode). Re-fetch with `get_bill` / `get_expense` to see the stored mode and recomputed `TxnTaxDetail`.
 
 ---
 

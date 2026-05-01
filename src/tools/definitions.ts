@@ -33,13 +33,20 @@ export const toolDefinitions = [
   },
   {
     name: "query",
-    description: "Execute a QuickBooks query using SQL-like syntax. Supports querying any entity type (Customer, Vendor, Invoice, Bill, Account, Item, Department, etc.). Defaults to MAXRESULTS 1000 if not specified. Examples: 'SELECT * FROM Customer', 'SELECT * FROM SalesReceipt WHERE TxnDate >= \\'2025-11-01\\' AND TxnDate <= \\'2025-11-30\\''",
+    description: "Execute a QuickBooks query using SQL-like syntax. Supports querying any entity type (Customer, Vendor, Invoice, Bill, Account, Item, Department, etc.). Defaults to MAXRESULTS 1000 if not specified. Examples: 'SELECT * FROM Customer', 'SELECT * FROM SalesReceipt WHERE TxnDate >= \\'2025-11-01\\' AND TxnDate <= \\'2025-11-30\\''. " +
+      "Intuit's query language is a SUBSET of SQL — known limitations: only AND between predicates (no OR), no IN (...) lists, no parenthesized groups, no JOIN, no subqueries, no UPPER/LOWER/CAST functions, and most transaction fields (DepartmentRef, AccountRef, Line, line-level fields) are not filterable. To match multiple Ids, run separate queries or filter client-side. To search a name, use LIKE '%substring%' (case-insensitive on most entities).",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "The SQL-like query string. Common entities: Customer, Vendor, Invoice, Bill, Account, Item, Department, JournalEntry, Purchase, Payment, SalesReceipt, Deposit. Add MAXRESULTS N to limit results (default: 1000). Note: Most transaction fields (DepartmentRef, AccountRef, Line) are not filterable. Error responses include valid filterable fields for the entity. Use query_account_transactions for account/department filtering. Escape apostrophes inside string literals with a backslash (e.g. WHERE DisplayName = 'Bob\\'s Burgers') — Intuit rejects SQL-style doubled quotes ('') with an unhelpful bare 400.",
+          description: "The SQL-like query string. Common entities: Customer, Vendor, Invoice, Bill, Account, Item, Department, JournalEntry, Purchase, Payment, SalesReceipt, Deposit. Add MAXRESULTS N to limit results (default: 1000). " +
+            "QBO query language constraints (NOT full SQL): " +
+            "(1) only AND, no OR — `WHERE Id = '1' OR Id = '2'` returns a parser error; run two queries instead. " +
+            "(2) no IN (...) lists. " +
+            "(3) no parenthesized predicate groups. " +
+            "(4) most transaction fields (DepartmentRef, AccountRef, Line, line-level fields) are not filterable — error responses list valid filterable fields for the entity. Use query_account_transactions for account/department filtering. " +
+            "(5) escape apostrophes inside string literals with a backslash (e.g. WHERE DisplayName = 'Bob\\'s Burgers') — Intuit rejects SQL-style doubled quotes ('') with an unhelpful bare 400.",
         },
       },
       required: ["query"],
@@ -143,7 +150,7 @@ export const toolDefinitions = [
   },
   {
     name: "query_account_transactions",
-    description: "Query all transactions affecting a specific account. Searches across JournalEntry, Purchase, Deposit, SalesReceipt, Bill, Invoice, and Payment. Returns consolidated list with date, type, amount (debit/credit), and description. Useful for investigating account balance discrepancies.",
+    description: "Query all transactions affecting a specific account. By default walks entity bodies (JournalEntry, Purchase, Deposit, SalesReceipt, Bill, Invoice, Payment) and emits each line whose AccountRef matches the queried account. This entity-walk MISSES postings from `TxnTaxDetail.TaxLine[]` (the GL effect of a line's tax_code on a tax-payable / tax-receivable account) and from entity types it doesn't cover (e.g. Sales Tax Payment, Transfer). Set include_tax_lines=true to also pull the GeneralLedgerDetail report and merge any postings missing from the entity walk — essential when querying a tax-tracking account (GST/HST Payable, ITC Receivable, PSB rebate, etc.). Returns consolidated list with date, type, amount (debit/credit), and description.",
     inputSchema: {
       type: "object",
       properties: {
@@ -162,6 +169,10 @@ export const toolDefinitions = [
         department: {
           type: "string",
           description: "Filter to specific department/location (optional)"
+        },
+        include_tax_lines: {
+          type: "boolean",
+          description: "If true, also fetch the GeneralLedgerDetail report and merge any postings not produced by the entity walk. Adds tax-line postings (from TxnTaxDetail.TaxLine[]) and entries from entity types the walk doesn't cover (Sales Tax Payment, Transfer, etc.). Required for accurate auditing of tax-tracking accounts. Adds one extra API call. Default: false."
         }
       },
       required: ["account"]
@@ -355,7 +366,7 @@ export const toolDefinitions = [
   },
   {
     name: "create_bill",
-    description: "Create a vendor bill. Accepts vendor/account/department names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Note: DepartmentRef is header-level only. Unknown parameters are rejected. Returns bill details and a link to view in QuickBooks.",
+    description: "Create a vendor bill. Accepts vendor/account/department names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Set global_tax_calculation to 'TaxExcluded' or 'TaxInclusive' on tax-tracking companies — when omitted, QBO defaults newly-created bills to 'NotApplicable' and the bill won't track tax even if line tax codes are present. Note: DepartmentRef is header-level only. Unknown parameters are rejected. Returns bill details and a link to view in QuickBooks.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -395,6 +406,11 @@ export const toolDefinitions = [
         doc_number: {
           type: "string",
           description: "Reference number for the bill (optional)",
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Header tax mode. Omit to let QBO default (which is 'NotApplicable' on API-created bills, even on tax-tracking companies). Pass 'TaxExcluded' (line amounts are pre-tax) or 'TaxInclusive' (line amounts include tax) to make line tax codes actually compute tax.",
         },
         lines: {
           type: "array",
@@ -692,7 +708,7 @@ export const toolDefinitions = [
   },
   {
     name: "create_expense",
-    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. To assign a line to a project, point customer_id at the project's id; QBO auto-fills line.ProjectRef. Use list_projects to discover project IDs. Covers Cash, Check, and Credit Card payment types. vendor_name/vendor_id accepted as aliases for entity_name/entity_id. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Unknown parameters are rejected.",
+    description: "Create an expense (Purchase). Accepts account/department/vendor names (will lookup IDs automatically). Lines support per-line customer, class, tax code, and billable status. Set global_tax_calculation to 'TaxExcluded' or 'TaxInclusive' on tax-tracking companies — when omitted, QBO defaults API-created purchases to 'NotApplicable' and the expense won't track tax even if line tax codes are present. To assign a line to a project, point customer_id at the project's id; QBO auto-fills line.ProjectRef. Use list_projects to discover project IDs. Covers Cash, Check, and Credit Card payment types. vendor_name/vendor_id accepted as aliases for entity_name/entity_id. Note: PaymentType cannot be changed after creation. DepartmentRef is header-level only. Unknown parameters are rejected.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -741,6 +757,11 @@ export const toolDefinitions = [
         doc_number: {
           type: "string",
           description: "Reference number for the expense (optional)",
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Header tax mode. Omit to let QBO default (which is 'NotApplicable' on API-created purchases, even on tax-tracking companies). Pass 'TaxExcluded' (line amounts are pre-tax) or 'TaxInclusive' (line amounts include tax) to make line tax codes actually compute tax.",
         },
         lines: {
           type: "array",
@@ -941,6 +962,11 @@ export const toolDefinitions = [
           type: "string",
           description: "Reference number for the sales receipt (optional)",
         },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Header tax mode. Omit to let QBO default. Pass 'TaxExcluded' (line amounts are pre-tax) or 'TaxInclusive' (line amounts include tax) to make line tax codes actually compute tax.",
+        },
         lines: {
           type: "array",
           description: "Array of line items. Each line references an item (product/service). Provide item_name OR item_id (name preferred).",
@@ -1050,6 +1076,11 @@ export const toolDefinitions = [
         doc_number: {
           type: "string",
           description: "Reference number for the invoice (optional)",
+        },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Header tax mode. Omit to let QBO default. Pass 'TaxExcluded' (line amounts are pre-tax) or 'TaxInclusive' (line amounts include tax) to make line tax codes actually compute tax.",
         },
         lines: {
           type: "array",
@@ -1428,6 +1459,11 @@ export const toolDefinitions = [
           type: "string",
           description: "Reference number for the vendor credit (optional)",
         },
+        global_tax_calculation: {
+          type: "string",
+          enum: ["TaxExcluded", "TaxInclusive", "NotApplicable"],
+          description: "Header tax mode. Omit to let QBO default. Pass 'TaxExcluded' (line amounts are pre-tax) or 'TaxInclusive' (line amounts include tax) to make line tax codes actually compute tax.",
+        },
         lines: {
           type: "array",
           description: "Array of line items. Each line credits an expense account.",
@@ -1595,7 +1631,7 @@ export const toolDefinitions = [
   },
   {
     name: "delete_entity",
-    description: "Permanently delete a QuickBooks transaction. Supports journal entries, bills, invoices, deposits, sales receipts, expenses, and vendor credits. Uses a two-step flow: first call previews what will be deleted, second call with confirm=true executes the deletion. Note: Customers cannot be deleted — use edit_customer with active=false to deactivate instead.",
+    description: "Permanently delete a QuickBooks transaction. Required parameters: entity_type (one of: 'journal_entry', 'bill', 'invoice', 'deposit', 'sales_receipt', 'expense', 'vendor_credit') and id (the entity's QBO ID — note: parameter is named `id`, not `entity_id`). Two-step flow: first call (without confirm or with confirm=false) previews what will be deleted; second call with confirm=true executes the deletion. Note: Customers cannot be deleted — use edit_customer with active=false to deactivate instead.",
     inputSchema: {
       type: "object",
       properties: {

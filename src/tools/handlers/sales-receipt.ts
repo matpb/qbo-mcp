@@ -41,7 +41,7 @@ interface CreateSalesReceiptLine {
 const CREATE_SR_KEYS = [
   'txn_date', 'customer_name', 'customer_id',
   'deposit_to_account', 'department_name', 'department_id',
-  'memo', 'doc_number', 'lines', 'draft',
+  'memo', 'doc_number', 'global_tax_calculation', 'lines', 'draft',
 ] as const;
 
 const EDIT_SR_KEYS = [
@@ -72,6 +72,7 @@ export async function handleCreateSalesReceipt(
     department_id?: string;
     memo?: string;
     doc_number?: string;
+    global_tax_calculation?: GlobalTaxCalc;
     lines: CreateSalesReceiptLine[];
     draft?: boolean;
   }
@@ -80,8 +81,12 @@ export async function handleCreateSalesReceipt(
   const {
     txn_date, customer_name, customer_id,
     deposit_to_account, department_name, department_id,
-    memo, doc_number, lines, draft = true,
+    memo, doc_number, global_tax_calculation, lines, draft = true,
   } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
@@ -187,6 +192,7 @@ export async function handleCreateSalesReceipt(
     ...(departmentRef && { DepartmentRef: departmentRef }),
     ...(memo && { PrivateNote: memo }),
     ...(doc_number && { DocNumber: doc_number }),
+    ...(global_tax_calculation && { GlobalTaxCalculation: global_tax_calculation }),
     Line: resolvedLines.map((line) => ({
       Amount: line.amountDollars,
       DetailType: "SalesItemLineDetail",
@@ -210,6 +216,7 @@ export async function handleCreateSalesReceipt(
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Deposit To: ${depositAccountRef?.name || "(default)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Tax Calc: ${global_tax_calculation || "(QBO default)"}`,
       `Memo: ${memo || "(none)"}`,
       `Total: $${formatDollars(totalCents)}`,
       "",
@@ -392,6 +399,11 @@ export async function handleEditSalesReceipt(
   const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
   const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept;
 
+  // Drop TxnTaxDetail from the round-trip when line tax codes change or the
+  // header tax mode is overridden, so QBO recomputes server-side. See
+  // bill.ts / expense.ts for the long explanation of the [3060] failure mode.
+  const wantsTaxRecompute = (lineChanges && lineChanges.length > 0) || global_tax_calculation !== undefined;
+
   // Build updated SalesReceipt
   const updated: Record<string, unknown> = {
     Id: current.Id,
@@ -408,7 +420,7 @@ export async function handleEditSalesReceipt(
     updated.PrivateNote = current.PrivateNote;
     if (current.CustomerRef) updated.CustomerRef = current.CustomerRef;
     if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
-    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.TxnTaxDetail && !wantsTaxRecompute) updated.TxnTaxDetail = current.TxnTaxDetail;
     if (current.DepositToAccountRef) updated.DepositToAccountRef = current.DepositToAccountRef;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
     // Copy lines and strip read-only / server-managed fields. Stripping
@@ -583,7 +595,9 @@ export async function handleEditSalesReceipt(
     }
     previewLines.push('');
     if (global_tax_calculation !== undefined) {
-      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+      previewLines.push(`Tax calc (override + recompute): GlobalTaxCalculation → ${global_tax_calculation}; QBO will recompute TxnTaxDetail`);
+    } else if (wantsTaxRecompute) {
+      previewLines.push(`Tax calc (recompute): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}; QBO will recompute TxnTaxDetail from new lines`);
     } else {
       previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
     }

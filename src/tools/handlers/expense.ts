@@ -62,7 +62,8 @@ const EXPENSE_LINE_CHANGE_KEYS = [
 const CREATE_EXPENSE_KEYS = [
   'payment_type', 'payment_account', 'txn_date',
   'entity_name', 'entity_id', 'vendor_name', 'vendor_id',
-  'department_name', 'department_id', 'memo', 'doc_number', 'lines', 'draft',
+  'department_name', 'department_id', 'memo', 'doc_number',
+  'global_tax_calculation', 'lines', 'draft',
 ] as const;
 
 const EDIT_EXPENSE_KEYS = [
@@ -101,6 +102,7 @@ export async function handleCreateExpense(
     department_id?: string;
     memo?: string;
     doc_number?: string;
+    global_tax_calculation?: GlobalTaxCalc;
     lines: CreateExpenseLine[];
     draft?: boolean;
   }
@@ -110,8 +112,12 @@ export async function handleCreateExpense(
     payment_type, payment_account, txn_date,
     entity_name, entity_id, vendor_name, vendor_id,
     department_name, department_id,
-    memo, doc_number, lines, draft = true,
+    memo, doc_number, global_tax_calculation, lines, draft = true,
   } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   // vendor_* is an accepted alias for entity_* — QBO's Purchase.EntityRef is
   // the same "Payee" that the Canadian UI labels "Supplier". Accept either.
@@ -246,6 +252,7 @@ export async function handleCreateExpense(
     ...(departmentRef && { DepartmentRef: departmentRef }),
     ...(memo && { PrivateNote: memo }),
     ...(doc_number && { DocNumber: doc_number }),
+    ...(global_tax_calculation && { GlobalTaxCalculation: global_tax_calculation }),
     Line: resolvedLines.map((line) => ({
       Amount: line.amount,
       DetailType: "AccountBasedExpenseLineDetail",
@@ -278,6 +285,7 @@ export async function handleCreateExpense(
       `Date: ${txn_date}`,
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
+      `Tax Calc: ${global_tax_calculation || "(QBO default)"}`,
       `Memo: ${memo || "(none)"}`,
       `Total: $${formatDollars(totalCents)}`,
       "",
@@ -480,6 +488,15 @@ export async function handleEditExpense(
 
   const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept || wantsClearPayee;
 
+  // Drop TxnTaxDetail from the round-trip when line tax codes change or the
+  // header tax mode is overridden, so QBO recomputes server-side (matches UI).
+  // If we echoed back the existing TxnTaxDetail, its TaxLine entries would
+  // still reference the OLD rate ids — QBO rejects with [3060] Invalid Tax
+  // Rate id when the new line tax_code points at a different agency or rate.
+  // Any line change can also shift the tax base (delete, new line, amount,
+  // account move), so we recompute on any line change to stay safe.
+  const wantsTaxRecompute = (lineChanges && lineChanges.length > 0) || global_tax_calculation !== undefined;
+
   const updated: Record<string, unknown> = {
     Id: current.Id,
     SyncToken: current.SyncToken,
@@ -495,7 +512,7 @@ export async function handleEditExpense(
     updated.DocNumber = current.DocNumber;
     updated.PrivateNote = current.PrivateNote;
     if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
-    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.TxnTaxDetail && !wantsTaxRecompute) updated.TxnTaxDetail = current.TxnTaxDetail;
     if (current.AccountRef) updated.AccountRef = current.AccountRef;
     if (current.EntityRef && !wantsClearPayee) updated.EntityRef = current.EntityRef;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
@@ -734,7 +751,9 @@ export async function handleEditExpense(
 
     previewLines.push('');
     if (global_tax_calculation !== undefined) {
-      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+      previewLines.push(`Tax calc (override + recompute): GlobalTaxCalculation → ${global_tax_calculation}; QBO will recompute TxnTaxDetail`);
+    } else if (wantsTaxRecompute) {
+      previewLines.push(`Tax calc (recompute): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}; QBO will recompute TxnTaxDetail from new lines`);
     } else {
       previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
     }

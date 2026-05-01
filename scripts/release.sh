@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build a distributable qbo-mcp-<version>.mcpb and wrap it in a .zip for email.
-# Invoked via `npm run release`. Runs on Mat's Linux/Mac machines; Joel never
-# needs this.
+# Invoked via `npm run release`. End-users install the .mcpb via Claude
+# Desktop's extension UI and never run this script.
 set -e
 
 cd "$(dirname "$0")/.."

@@ -51,7 +51,7 @@ interface VendorCreditLineChange {
 const CREATE_VC_KEYS = [
   'vendor_name', 'vendor_id', 'txn_date',
   'department_name', 'department_id', 'ap_account',
-  'memo', 'doc_number', 'lines', 'draft',
+  'memo', 'doc_number', 'global_tax_calculation', 'lines', 'draft',
 ] as const;
 
 const EDIT_VC_KEYS = [
@@ -92,6 +92,7 @@ export async function handleCreateVendorCredit(
     ap_account?: string;
     memo?: string;
     doc_number?: string;
+    global_tax_calculation?: GlobalTaxCalc;
     lines: CreateVendorCreditLine[];
     draft?: boolean;
   }
@@ -100,8 +101,12 @@ export async function handleCreateVendorCredit(
   const {
     vendor_name, vendor_id, txn_date,
     department_name, department_id, ap_account,
-    memo, doc_number, lines, draft = true,
+    memo, doc_number, global_tax_calculation, lines, draft = true,
   } = args;
+
+  if (global_tax_calculation !== undefined && !GLOBAL_TAX_CALC_VALUES.has(global_tax_calculation)) {
+    throw new Error(`Invalid global_tax_calculation: "${global_tax_calculation}". Expected one of: TaxExcluded, TaxInclusive, NotApplicable.`);
+  }
 
   if (!lines || lines.length === 0) {
     throw new Error("At least one line is required");
@@ -217,6 +222,7 @@ export async function handleCreateVendorCredit(
     TxnDate: txn_date,
     ...(memo && { PrivateNote: memo }),
     ...(doc_number && { DocNumber: doc_number }),
+    ...(global_tax_calculation && { GlobalTaxCalculation: global_tax_calculation }),
     ...(departmentRef && { DepartmentRef: departmentRef }),
     ...(apAccountRef && { APAccountRef: apAccountRef }),
     Line: resolvedLines.map((line) => ({
@@ -247,6 +253,7 @@ export async function handleCreateVendorCredit(
       `Ref no.: ${doc_number || "(auto-assign)"}`,
       `Department: ${departmentRef?.name || "(none)"}`,
       `AP Account: ${apAccountRef?.name || "(default)"}`,
+      `Tax Calc: ${global_tax_calculation || "(QBO default)"}`,
       `Memo: ${memo || "(none)"}`,
       `Total: $${formatDollars(totalCents)}`,
       "",
@@ -410,6 +417,11 @@ export async function handleEditVendorCredit(
   const wantsSetDept = typeof department_name === 'string' && department_name.length > 0;
   const needsFullUpdate = (lineChanges && lineChanges.length > 0) || wantsClearDept;
 
+  // Drop TxnTaxDetail from the round-trip when line tax codes change or the
+  // header tax mode is overridden, so QBO recomputes server-side. See
+  // bill.ts / expense.ts for the long explanation of the [3060] failure mode.
+  const wantsTaxRecompute = (lineChanges && lineChanges.length > 0) || global_tax_calculation !== undefined;
+
   let vendorRef = current.VendorRef;
 
   const updated: Record<string, unknown> = {
@@ -426,7 +438,7 @@ export async function handleEditVendorCredit(
     updated.PrivateNote = current.PrivateNote;
     updated.DocNumber = current.DocNumber;
     if (current.GlobalTaxCalculation) updated.GlobalTaxCalculation = current.GlobalTaxCalculation;
-    if (current.TxnTaxDetail) updated.TxnTaxDetail = current.TxnTaxDetail;
+    if (current.TxnTaxDetail && !wantsTaxRecompute) updated.TxnTaxDetail = current.TxnTaxDetail;
     if (current.DepartmentRef && !wantsClearDept) updated.DepartmentRef = current.DepartmentRef;
     // Strip line-level ProjectRef along with read-only LineNum — see expense.ts
     // for the full explanation. ProjectRef is server-derived from CustomerRef.
@@ -620,7 +632,9 @@ export async function handleEditVendorCredit(
 
     previewLines.push('');
     if (global_tax_calculation !== undefined) {
-      previewLines.push(`Tax calc (override): GlobalTaxCalculation → ${global_tax_calculation}`);
+      previewLines.push(`Tax calc (override + recompute): GlobalTaxCalculation → ${global_tax_calculation}; QBO will recompute TxnTaxDetail`);
+    } else if (wantsTaxRecompute) {
+      previewLines.push(`Tax calc (recompute): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}; QBO will recompute TxnTaxDetail from new lines`);
     } else {
       previewLines.push(`Tax calc (preserved): GlobalTaxCalculation: ${current.GlobalTaxCalculation || '(none)'}`);
     }
