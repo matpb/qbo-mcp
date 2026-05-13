@@ -537,6 +537,87 @@ async function main() {
     bad("include_tax_lines flow", e.message);
   }
 
+  // ===== Reports v2 migration: parser sanity =====
+  // Hits every report tool to confirm parsers still produce sane output.
+  // Set QBO_REPORTS_TESTING_MIGRATION=true to drive the underlying QBO call
+  // with `_testing_migration=true` so we validate against v2 response shapes
+  // before the 2026-06-30 cutover.
+  section("Reports v2 migration: parser sanity");
+  const reportsMigration = (process.env.QBO_REPORTS_TESTING_MIGRATION || "").toLowerCase();
+  if (["1","true","yes","on"].includes(reportsMigration)) {
+    ok(`_testing_migration flag ACTIVE (env=${reportsMigration}) — exercising v2 response shapes`);
+  } else {
+    ok(`_testing_migration flag inactive — exercising v1 response shapes`);
+  }
+
+  try {
+    const r = await callTool("get_profit_loss", {
+      start_date: "2026-01-01",
+      end_date: "2026-05-01",
+    });
+    const txt = unwrapText(r);
+    if (txt.includes("Profit and Loss") || txt.includes("ProfitAndLoss")) ok("profit_loss report parsed (header present)");
+    else bad("profit_loss report parsed", `unexpected output: ${txt.slice(0, 200)}`);
+    if (txt.match(/(Total Income|Net Income|Gross Profit|Total Expenses):/)) ok("profit_loss summary lines extracted");
+    else bad("profit_loss summary lines extracted", "no group totals found");
+  } catch (e) {
+    bad("get_profit_loss report", e.message);
+  }
+
+  try {
+    const r = await callTool("get_balance_sheet", { as_of_date: "2026-05-01" });
+    const txt = unwrapText(r);
+    if (txt.includes("Balance Sheet") || txt.includes("BalanceSheet")) ok("balance_sheet report parsed (header present)");
+    else bad("balance_sheet report parsed", `unexpected output: ${txt.slice(0, 200)}`);
+    if (txt.match(/Total (Assets|Liabilities)/)) ok("balance_sheet summary lines extracted");
+    else bad("balance_sheet summary lines extracted", "no group totals found");
+  } catch (e) {
+    bad("get_balance_sheet report", e.message);
+  }
+
+  try {
+    const r = await callTool("get_trial_balance", {
+      start_date: "2026-01-01",
+      end_date: "2026-05-01",
+    });
+    const txt = unwrapText(r);
+    if (txt.includes("Trial Balance") || txt.includes("TrialBalance")) ok("trial_balance report parsed (header present)");
+    else bad("trial_balance report parsed", `unexpected output: ${txt.slice(0, 200)}`);
+    const dr = txt.match(/Total Debits:\s+\$([\d,]+\.\d{2})/);
+    const cr = txt.match(/Total Credits:\s+\$([\d,]+\.\d{2})/);
+    if (dr && cr) {
+      const drNum = parseFloat(dr[1].replace(/,/g, ""));
+      const crNum = parseFloat(cr[1].replace(/,/g, ""));
+      if (drNum > 0 && Math.abs(drNum - crNum) < 0.01) ok(`trial_balance balanced (Dr=$${dr[1]}, Cr=$${cr[1]})`);
+      else bad("trial_balance balanced", `Dr=${dr[1]} Cr=${cr[1]} (diff=${(drNum-crNum).toFixed(2)})`);
+    } else {
+      bad("trial_balance totals parsed", "no Dr/Cr totals in output");
+    }
+    if (txt.includes("UNBALANCED")) bad("trial_balance UNBALANCED flag", "summary extractor flagged the book unbalanced");
+    else ok("trial_balance not flagged UNBALANCED");
+  } catch (e) {
+    bad("get_trial_balance report", e.message);
+  }
+
+  try {
+    const r = await callTool("account_period_summary", {
+      account: "Checking",
+      start_date: "2026-01-01",
+      end_date: "2026-05-01",
+    });
+    const txt = unwrapText(r);
+    if (txt.includes("Account Period Summary")) ok("account_period_summary report parsed");
+    else bad("account_period_summary report parsed", `unexpected: ${txt.slice(0, 200)}`);
+    const tx = txt.match(/Transactions:\s+(\d+)/);
+    if (tx && parseInt(tx[1], 10) >= 0) ok(`account_period_summary transaction count parsed (${tx[1]})`);
+    else bad("account_period_summary transaction count", "missing");
+    if (txt.match(/Opening Balance:\s+-?\$/) && txt.match(/Closing Balance:\s+-?\$/))
+      ok("account_period_summary opening/closing balances parsed");
+    else bad("account_period_summary opening/closing balances", "missing");
+  } catch (e) {
+    bad("account_period_summary report", e.message);
+  }
+
   // ===== Issue 5: query OR-on-Id error bubble =====
   section("Issue 5: query OR-on-Id error surface");
   try {

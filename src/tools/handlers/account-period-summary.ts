@@ -4,7 +4,7 @@
 
 import QuickBooks from "node-quickbooks";
 import { resolveAccount, resolveDepartmentId, promisify } from "../../client/index.js";
-import { outputReport } from "../../utils/index.js";
+import { outputReport, applyReportsMigrationFlag, logReportsMigrationFailure } from "../../utils/index.js";
 import { QBReport } from "../../types/index.js";
 
 interface GLRowColData {
@@ -184,11 +184,18 @@ export async function handleAccountPeriodSummary(
   if (accounting_method) {
     options.accounting_method = accounting_method;
   }
+  applyReportsMigrationFlag(options);
 
   // Call the GeneralLedger report
-  const report = (await promisify<unknown>((cb) =>
-    client.reportGeneralLedgerDetail(options, cb)
-  )) as GLReport;
+  let report: GLReport;
+  try {
+    report = (await promisify<unknown>((cb) =>
+      client.reportGeneralLedgerDetail(options, cb)
+    )) as GLReport;
+  } catch (err) {
+    logReportsMigrationFailure("GeneralLedgerDetail (account_period_summary)", options, err);
+    throw err;
+  }
 
   // Parse the report (account type determines debit/credit sign convention)
   const summary = parseGLReport(report, resolvedAccount.AccountType);

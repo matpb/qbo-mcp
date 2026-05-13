@@ -7,7 +7,7 @@ import {
   getAccountCache,
   promisify,
 } from "../../client/index.js";
-import { toCents, sumCents, toDollars, outputReport, isHttpMode } from "../../utils/index.js";
+import { toCents, sumCents, toDollars, outputReport, isHttpMode, applyReportsMigrationFlag, logReportsMigrationFailure } from "../../utils/index.js";
 import { PaginationParams } from "../../types/index.js";
 import { paginatedQuery, extractAccountLines, extractGLLines, GLReport } from "../../query/index.js";
 import { TransactionLine } from "../../types/index.js";
@@ -164,6 +164,7 @@ export async function handleQueryAccountTransactions(
       end_date: endDateResolved,
     };
     if (resolvedDepartmentId) glOptions.department = resolvedDepartmentId;
+    applyReportsMigrationFlag(glOptions);
 
     try {
       const glReport = await promisify<unknown>((cb) =>
@@ -194,10 +195,11 @@ export async function handleQueryAccountTransactions(
         allLines.push(gl);
         taxLinesAdded++;
       }
-    } catch {
+    } catch (err) {
       // GL report can fail (e.g., huge company, throttling). Fall through
       // with whatever the entity-walk produced; the count flags below
       // will signal that the augmentation didn't run.
+      logReportsMigrationFailure("GeneralLedgerDetail (query_account_transactions)", glOptions, err);
       glRowCount = -1;
     }
   }

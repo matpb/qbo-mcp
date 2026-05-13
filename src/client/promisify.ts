@@ -56,7 +56,12 @@ export function promisify<T>(fn: (callback: (err: Error | null, result: T) => vo
       if (err) {
         const intuitMessage = extractIntuitFault(err);
         if (intuitMessage) {
-          reject(new Error(intuitMessage));
+          // Preserve the raw Fault body for diagnostics. Useful during the
+          // 2026-06-30 Reports API v2 cutover where we want to see Intuit's
+          // full error payload for [6000] business validation failures.
+          const wrapped = new Error(intuitMessage) as Error & { intuitRaw?: unknown };
+          wrapped.intuitRaw = err;
+          reject(wrapped);
           return;
         }
         reject(err instanceof Error ? err : new Error(String(err)));

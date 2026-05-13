@@ -2,7 +2,7 @@
 
 import QuickBooks from "node-quickbooks";
 import { promisify, resolveDepartmentId } from "../../client/index.js";
-import { outputReport } from "../../utils/index.js";
+import { outputReport, applyReportsMigrationFlag } from "../../utils/index.js";
 import { extractReportSummary } from "../../reports/index.js";
 import { QBReport } from "../../types/index.js";
 
@@ -24,6 +24,7 @@ export async function handleGetProfitLoss(
   if (summarize_by) options.summarize_column_by = summarize_by;
   if (department) options.department = await resolveDepartmentId(client, department);
   if (accounting_method) options.accounting_method = accounting_method;
+  applyReportsMigrationFlag(options);
 
   const result = await promisify<unknown>((cb) =>
     client.reportProfitAndLoss(options, cb)
@@ -54,6 +55,7 @@ export async function handleGetBalanceSheet(
   if (summarize_by) options.summarize_column_by = summarize_by;
   if (department) options.department = await resolveDepartmentId(client, department);
   if (accounting_method) options.accounting_method = accounting_method;
+  applyReportsMigrationFlag(options);
 
   const result = await promisify<unknown>((cb) =>
     client.reportBalanceSheet(options, cb)
@@ -77,6 +79,7 @@ export async function handleGetTrialBalance(
   if (start_date) options.start_date = start_date;
   if (end_date) options.end_date = end_date;
   if (accounting_method) options.accounting_method = accounting_method;
+  applyReportsMigrationFlag(options);
 
   const result = await promisify<unknown>((cb) =>
     client.reportTrialBalance(options, cb)

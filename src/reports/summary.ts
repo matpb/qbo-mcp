@@ -35,8 +35,14 @@ export function extractReportSummary(report: QBReport, reportType: string): stri
       [...rows].reverse().find((r) => r.Summary?.ColData);
 
     const colData = grandTotalRow?.Summary?.ColData;
-    const totalDebit = parseFloat(colData?.[1]?.value || "0") || 0;
-    const totalCredit = parseFloat(colData?.[2]?.value || "0") || 0;
+    // Use ColTitle lookup to find Debit/Credit columns. The v1 shape happens to
+    // put them at positions 1 and 2, but the v2 Reports API (cutover 2026-06-30)
+    // warns against positional row/column index assumptions, and v2 also adds a
+    // Header.Option entry like NoReportData=true that can shift adjacent columns.
+    const debitIdx = columns.findIndex(c => c.ColTitle === "Debit");
+    const creditIdx = columns.findIndex(c => c.ColTitle === "Credit");
+    const totalDebit = debitIdx >= 0 ? (parseFloat(colData?.[debitIdx]?.value || "0") || 0) : 0;
+    const totalCredit = creditIdx >= 0 ? (parseFloat(colData?.[creditIdx]?.value || "0") || 0) : 0;
 
     const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     lines.push(`Total Debits:  $${fmt(totalDebit)}`);
