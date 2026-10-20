@@ -140,6 +140,33 @@ export function describeGLColumns(report: GLReport): string {
     .join(', ');
 }
 
+// Copies amounts from the default-columns rows onto the detailed rows when both lists line up by position.
+export function alignGLAmounts(
+  detailed: GLParsedRow[],
+  plain: GLParsedRow[],
+): { ok: true; rows: GLParsedRow[] } | { ok: false; reason: string } {
+  const triple = (r?: GLParsedRow) => (r ? `(${r.date},${r.type},${r.txnId})` : '(missing)');
+  const n = Math.min(detailed.length, plain.length);
+  let bad = -1;
+  for (let i = 0; i < n; i++) {
+    const a = detailed[i];
+    const b = plain[i];
+    if (a.date !== b.date || a.type !== b.type || a.txnId !== b.txnId) {
+      bad = i;
+      break;
+    }
+  }
+  if (bad < 0 && detailed.length !== plain.length) bad = n;
+  if (bad >= 0) {
+    const lengths = detailed.length !== plain.length ? `row counts differ (${detailed.length} vs ${plain.length}); ` : '';
+    return {
+      ok: false,
+      reason: `${lengths}first mismatch at index ${bad}: ${triple(detailed[bad])} vs ${triple(plain[bad])}`,
+    };
+  }
+  return { ok: true, rows: detailed.map((r, i) => ({ ...r, amount: plain[i].amount })) };
+}
+
 // Flat Data rows of a GeneralLedger report, cells located by column title.
 // Amounts keep the report's native sign; txnId is '' when no cell has an id.
 export function parseGLRows(report: GLReport): GLParsedRow[] {

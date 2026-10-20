@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.11
+
+- `get_transaction_detail` fills in amounts from a second ledger call when a company's books don't return the amount column for the detailed view.
+
 ## 0.4.10
 
 - `get_transaction_detail` shows amounts in multicurrency companies, and reports an error naming the columns received instead of zeros when no amount column comes back.

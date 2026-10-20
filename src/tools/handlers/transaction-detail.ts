@@ -11,7 +11,7 @@ import {
   resolveDepartmentId,
 } from "../../client/index.js";
 import { toCents, toDollars, outputReport, applyReportsMigrationFlag } from "../../utils/index.js";
-import { parseGLRows, findGLAmountColumn, describeGLColumns, normalizeTxnTypeLabel, GLReport, GLParsedRow } from "../../query/index.js";
+import { parseGLRows, findGLAmountColumn, describeGLColumns, alignGLAmounts, normalizeTxnTypeLabel, GLReport, GLParsedRow } from "../../query/index.js";
 
 const GL_COLUMNS =
   "tx_date,txn_type,doc_num,name,emp_name,vend_name,cust_name,klass_name,dept_name,account_name,split_acc,memo,subt_nat_home_amount,subt_nat_amount";
@@ -122,8 +122,27 @@ export async function handleGetTransactionDetail(
   ) as GLReport;
 
   let rows = parseGLRows(report).filter(r => r.type);
-  if (rows.length > 0 && findGLAmountColumn(report) < 0) {
-    throw new Error(`General Ledger report has rows but no amount column. Columns received: ${describeGLColumns(report)}`);
+  let amountSource: string | undefined;
+  // An all-zero amount column is treated like a missing one.
+  if (rows.length > 0 && (findGLAmountColumn(report) < 0 || rows.every(r => r.amount === 0))) {
+    const plainOptions = { ...options };
+    delete plainOptions.columns;
+    const plainReport = await promisify<unknown>((cb) =>
+      client.reportGeneralLedgerDetail(plainOptions, cb)
+    ) as GLReport;
+    const explicitCols = describeGLColumns(report);
+    const defaultCols = describeGLColumns(plainReport);
+    const plainRows = parseGLRows(plainReport).filter(r => r.type);
+    const counts = `explicit rows ${rows.length}, default rows ${plainRows.length}`;
+    if (findGLAmountColumn(plainReport) < 0) {
+      throw new Error(`General Ledger report has rows but no amount column, also with default columns. Explicit columns: ${explicitCols}. Default columns: ${defaultCols}. ${counts}`);
+    }
+    const aligned = alignGLAmounts(rows, plainRows);
+    if (!aligned.ok) {
+      throw new Error(`General Ledger amount fallback could not align the two reports: ${aligned.reason}. Explicit columns: ${explicitCols}. Default columns: ${defaultCols}. ${counts}`);
+    }
+    rows = aligned.rows;
+    amountSource = `default-columns fallback (explicit amount column not returned: ${explicitCols}; default columns: ${defaultCols})`;
   }
   let typeNote: string | undefined;
   if (transaction_type) {
@@ -155,6 +174,7 @@ export async function handleGetTransactionDetail(
   const data = {
     dateRange: { start: startResolved, end: endResolved },
     filters,
+    ...(amountSource ? { amountSource } : {}),
     amountSign: "native sign as reported by QuickBooks General Ledger (per-account balance convention)",
     totals,
     ...(typeNote ? { note: typeNote } : {}),
@@ -173,6 +193,7 @@ export async function handleGetTransactionDetail(
   summaryLines.push("");
   summaryLines.push(`Rows: ${totals.rowCount} | Total amount: ${fmt(totals.total)}`);
   if (typeNote) summaryLines.push(typeNote);
+  if (amountSource) summaryLines.push("Amounts taken from a second General Ledger call (the detailed column set returned no amount column).");
   if (truncated) {
     summaryLines.push(`(Showing first ${maxRows} of ${rows.length} rows; totals cover all ${rows.length} matching rows)`);
   }

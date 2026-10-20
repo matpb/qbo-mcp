@@ -3,6 +3,7 @@ import {
   parseGLRows,
   findGLAmountColumn,
   normalizeTxnTypeLabel,
+  alignGLAmounts,
 } from "../dist/query/gl-postings.js";
 import { extractReportSummary } from "../dist/reports/summary.js";
 
@@ -91,6 +92,20 @@ check("Paycheck equals Paycheque", n("Paycheck") === n("Paycheque"));
 check("Check equals Cheque", n("Check") === n("Cheque"));
 check("case-insensitive", n("PAYCHEQUE") === n("paycheck"));
 check("different types stay different", n("Paycheck") !== n("Check"));
+
+// alignGLAmounts
+const glRow = (date, type, txnId, amount) => ({ date, type, txnId, amount });
+const det = [glRow("2026-01-01", "Invoice", "1", 0), glRow("2026-01-02", "Bill", "2", 0), glRow("2026-01-03", "Paycheck", "3", 0)];
+const pln = [glRow("2026-01-01", "Invoice", "1", 10.5), glRow("2026-01-02", "Bill", "2", -20), glRow("2026-01-03", "Paycheck", "3", 300)];
+const okAlign = alignGLAmounts(det, pln);
+check("align: equal lists copy amounts", okAlign.ok && okAlign.rows.map(r => r.amount).join() === "10.5,-20,300" && okAlign.rows[1].type === "Bill");
+const shortAlign = alignGLAmounts(det, pln.slice(0, 2));
+check("align: length mismatch fails", shortAlign.ok === false && /3 vs 2/.test(shortAlign.reason), JSON.stringify(shortAlign));
+const badPln = pln.map((r, i) => (i === 2 ? { ...r, txnId: "99" } : r));
+const idAlign = alignGLAmounts(det, badPln);
+check("align: txnId mismatch at index 2 fails mentioning index 2", idAlign.ok === false && idAlign.reason.includes("index 2"), JSON.stringify(idAlign));
+const emptyAlign = alignGLAmounts([], []);
+check("align: empty lists are ok", emptyAlign.ok === true && emptyAlign.rows.length === 0);
 
 if (failed) {
   console.log(`${failed} check(s) failed`);
