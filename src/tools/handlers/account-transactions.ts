@@ -12,6 +12,17 @@ import { PaginationParams } from "../../types/index.js";
 import { paginatedQuery, extractAccountLines, extractGLLines, GLReport } from "../../query/index.js";
 import { TransactionLine } from "../../types/index.js";
 
+// displayTypes the entity walk reads; GL rows of any other type are merged from the report.
+const ENTITY_WALK_TYPES = new Set([
+  "JournalEntry",
+  "Purchase",
+  "Deposit",
+  "SalesReceipt",
+  "Bill",
+  "Invoice",
+  "Payment",
+]);
+
 // Group transactions by unique transaction key (type:txnId)
 interface GroupedTransaction {
   type: string;
@@ -149,15 +160,14 @@ export async function handleQueryAccountTransactions(
     allLines.push(...lines);
   }
 
-  // Optional augmentation: pull GL detail for the account, which captures
-  // postings the entity-walk misses — primarily TxnTaxDetail.TaxLine[]
-  // postings to tax-payable / tax-receivable accounts, plus Sales Tax
-  // Payment entities and other types not covered by the entity-walk's
-  // hardcoded list. We dedupe by (txnId, signed cents) so direct line
-  // postings already reported by the entity-walk aren't doubled up.
+  // GL rows of types the entity walk can't read are always merged; include_tax_lines
+  // also merges covered-type rows the walk missed, deduped by (txnId, signed cents).
   let glRowCount = 0;
   let taxLinesAdded = 0;
-  if (include_tax_lines) {
+  let uncoveredAdded = 0;
+  const uncoveredLabels = new Set<string>();
+  let glFailed = false;
+  {
     const glOptions: Record<string, string> = {
       account: resolvedAccount.Id,
       start_date: startDateResolved,
@@ -180,27 +190,34 @@ export async function handleQueryAccountTransactions(
       });
       glRowCount = glLines.length;
 
-      // Dedupe key: txnId + signed cents (rounded). Two GL rows with the
-      // same txnId and same signed amount almost certainly refer to the
-      // same posting — extra GL rows beyond the entity-walk's are the new
-      // information we want (typically tax lines).
       const seenKeys = new Set<string>();
       for (const l of allLines) {
         seenKeys.add(`${l.txnId}|${Math.round(l.amount * 100)}`);
       }
+      const uncovered: TransactionLine[] = [];
       for (const gl of glLines) {
+        if (!ENTITY_WALK_TYPES.has(gl.type)) {
+          uncovered.push(gl);
+          continue;
+        }
+        if (!include_tax_lines) continue;
         const key = `${gl.txnId}|${Math.round(gl.amount * 100)}`;
         if (seenKeys.has(key)) continue;
         seenKeys.add(key);
         allLines.push(gl);
         taxLinesAdded++;
       }
+      for (const gl of uncovered) {
+        allLines.push(gl);
+        uncoveredAdded++;
+        uncoveredLabels.add(gl.type);
+      }
     } catch (err) {
-      // GL report can fail (e.g., huge company, throttling). Fall through
-      // with whatever the entity-walk produced; the count flags below
-      // will signal that the augmentation didn't run.
+      // GL report can fail (huge company, throttling); keep the entity-walk
+      // result and flag it in the summary.
       logReportsMigrationFailure("GeneralLedgerDetail (query_account_transactions)", glOptions, err);
       glRowCount = -1;
+      glFailed = true;
     }
   }
 
@@ -301,7 +318,9 @@ export async function handleQueryAccountTransactions(
       totalDebits,
       totalCredits,
       netChange,
-      ...(include_tax_lines ? { taxLinesIncluded: true, taxLinesAdded, glRowCount } : {}),
+      uncoveredTypePostingsAdded: uncoveredAdded,
+      glRowCount,
+      ...(include_tax_lines ? { taxLinesIncluded: true, taxLinesAdded } : {}),
     },
     transactions: outputLines,
     groupedByTransaction: outputGrouped,
@@ -324,11 +343,18 @@ export async function handleQueryAccountTransactions(
 
   summaryLines.push('');
   summaryLines.push(`Summary: ${groupedTransactions.length} transactions | Debits: ${formatCurrency(totalDebits)} | Credits: ${formatCurrency(totalCredits)} | Net: ${netChange >= 0 ? '' : '-'}${formatCurrency(netChange)}`);
+  if (glFailed) {
+    summaryLines.push(`GL report fetch failed; results show entity-walk only (Paycheck, Transfer and other types the walk can't read are missing).`);
+  } else {
+    const labels = [...uncoveredLabels].sort();
+    const shown = labels.length > 0 ? ` (${labels.slice(0, 5).join(', ')}${labels.length > 5 ? ', ...' : ''})` : '';
+    summaryLines.push(`+${uncoveredAdded} postings from GL for types the entity walk can't read${shown}.`);
+  }
   if (include_tax_lines) {
-    if (glRowCount === -1) {
+    if (glFailed) {
       summaryLines.push(`Tax-line augmentation: GL report fetch failed; results show entity-walk only.`);
     } else {
-      summaryLines.push(`Tax-line augmentation: +${taxLinesAdded} postings from GL (${glRowCount} GL rows total). These are typically TxnTaxDetail.TaxLine entries and Sales Tax Payment lines that the entity walk misses.`);
+      summaryLines.push(`Tax-line augmentation: +${taxLinesAdded} postings from GL (${glRowCount} GL rows total). These are typically TxnTaxDetail.TaxLine entries that the entity walk misses.`);
     }
   }
 

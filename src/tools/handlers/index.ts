@@ -10,6 +10,7 @@ export {
 } from './reports.js';
 export { handleQueryAccountTransactions } from './account-transactions.js';
 export { handleAccountPeriodSummary } from './account-period-summary.js';
+export { handleGetTransactionDetail } from './transaction-detail.js';
 export {
   handleCreateJournalEntry,
   handleGetJournalEntry,

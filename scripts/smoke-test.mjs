@@ -99,6 +99,21 @@ function unwrapRaw(result) {
   try { return JSON.parse(m[1]); } catch { return null; }
 }
 
+// P&L report helpers: Data rows (recursive) and top-level group summaries.
+function plDataRows(rows, out = []) {
+  for (const r of rows ?? []) {
+    if (r.type === "Data" && r.ColData) out.push(r);
+    if (r.Rows?.Row) plDataRows(r.Rows.Row, out);
+  }
+  return out;
+}
+function plGroupSummary(raw, group) {
+  return raw?.Rows?.Row?.find((r) => r.group === group)?.Summary?.ColData;
+}
+function plNum(cell) {
+  return parseFloat(cell?.value ?? "") || 0;
+}
+
 let pass = 0, fail = 0;
 const failures = [];
 function ok(name, msg = "") {
@@ -109,6 +124,9 @@ function bad(name, msg) {
   fail++;
   failures.push(`${name}: ${msg}`);
   console.log(`  ✗ ${name} — ${msg}`);
+}
+function skip(name, msg) {
+  console.log(`  - SKIP ${name} — ${msg}`);
 }
 function section(title) {
   console.log(`\n=== ${title} ===`);
@@ -148,6 +166,13 @@ async function main() {
   if (qd?.description?.includes("only AND") || qd?.inputSchema?.properties?.query?.description?.includes("only AND"))
     ok("query description warns about OR/IN limits");
   else bad("query description warns about OR/IN limits", "no AND/OR caveat found");
+  try {
+    const ci = unwrapText(await callTool("get_company_info", {}));
+    if (ci.includes("qbo-mcp version: 0.4.8")) ok("get_company_info reports qbo-mcp version: 0.4.8");
+    else bad("get_company_info reports qbo-mcp version", `no 'qbo-mcp version: 0.4.8' in tail: ${ci.slice(-120)}`);
+  } catch (e) {
+    bad("get_company_info reports qbo-mcp version", e.message);
+  }
   const dd = findTool("delete_entity");
   if (dd?.description?.match(/parameter is named\s*`?id`?,?\s*NOT/i))
     ok("delete_entity description spells out id param name");
@@ -647,6 +672,172 @@ async function main() {
       else bad(`delete confirmed for ${t.entity_type} ${t.id}`, ctxt.slice(0, 200));
     } catch (e) {
       bad(`delete ${t.entity_type} ${t.id}`, e.message);
+    }
+  }
+
+  // ===== Report filters: P&L filters + get_transaction_detail =====
+  section("Report filters");
+  const gtd = findTool("get_transaction_detail");
+  if (gtd) ok("tool get_transaction_detail listed"); else bad("tool get_transaction_detail listed", "missing");
+  const plProps = findTool("get_profit_loss")?.inputSchema?.properties ?? {};
+  for (const p of ["customer", "class", "employee", "vendor"]) {
+    if (plProps[p]) ok(`get_profit_loss schema has ${p}`); else bad(`get_profit_loss schema has ${p}`, "missing");
+  }
+
+  const rfTrash = [];
+  try {
+    const FDATE = "2026-10-20";
+    const CUST1 = "Amy's Bird Sanctuary";
+    const CUST2 = "Cool Cars";
+    const VEND1 = "Books by Bessie";
+    let VEND2 = null;
+    try {
+      const vq = await callTool("query", { query: "SELECT Id, DisplayName FROM Vendor WHERE Active = true MAXRESULTS 50" });
+      const vtxt = unwrapText(vq);
+      const names = [...vtxt.matchAll(/"DisplayName":\s*"([^"]+)"/g)].map((m) => m[1]);
+      VEND2 = names.find((n) => n !== VEND1) ?? null;
+    } catch (e) {
+      bad("report filters: pick second vendor", e.message);
+    }
+
+    const seed = async (vendor, customer, amount) => {
+      const result = await callTool("create_expense", {
+        payment_type: "CreditCard",
+        payment_account: "Mastercard",
+        txn_date: FDATE,
+        vendor_name: vendor,
+        memo: "SMOKE — report filters fixture",
+        lines: [{ account_name: "Office Expenses", amount, customer_name: customer, description: "smoke report-filter line" }],
+        draft: false,
+      });
+      const m = unwrapText(result).match(/txnId=(\d+)/);
+      if (!m) throw new Error(`no txnId in: ${unwrapText(result).slice(0, 200)}`);
+      rfTrash.push({ entity_type: "expense", id: m[1] });
+      return m[1];
+    };
+
+    let id1 = null, id2 = null;
+    if (VEND2) {
+      try {
+        id1 = await seed(VEND1, CUST1, 123.45);
+        id2 = await seed(VEND2, CUST2, 67.89);
+        ok(`seeded expenses ${id1} (${VEND1}/${CUST1}) and ${id2} (${VEND2}/${CUST2})`);
+      } catch (e) {
+        bad("seed report-filter expenses", e.message);
+      }
+    } else {
+      skip("report-filter seed", "no second vendor found in sandbox");
+    }
+
+    if (id1 && id2) {
+      try {
+        const pl = unwrapRaw(await callTool("get_profit_loss", {
+          start_date: FDATE, end_date: FDATE, customer: CUST1, summarize_by: "Vendors",
+        }));
+        const cols = pl?.Columns?.Column ?? [];
+        const vi = cols.findIndex((c) => c.ColTitle === VEND1);
+        const exp = plGroupSummary(pl, "Expenses");
+        const got = vi >= 0 ? plNum(exp?.[vi]) : NaN;
+        if (Math.abs(got - 123.45) < 0.005) ok(`P&L customer=${CUST1} by Vendors: ${VEND1} expenses = 123.45`);
+        else bad("P&L customer filter by Vendors", `${VEND1} column expenses = ${got} (col index ${vi}), expected 123.45`);
+        const v2i = cols.findIndex((c) => c.ColTitle === VEND2);
+        if (v2i >= 0 && plNum(exp?.[v2i]) !== 0) bad("P&L customer filter excludes other customer", `${VEND2} column = ${plNum(exp?.[v2i])}`);
+        else ok("P&L customer filter excludes the other customer's expense");
+      } catch (e) {
+        bad("P&L customer + summarize_by=Vendors", e.message);
+      }
+
+      try {
+        const td = unwrapRaw(await callTool("get_transaction_detail", { start_date: FDATE, end_date: FDATE, customer: CUST1 }));
+        const rows = td?.rows ?? [];
+        if (rows.some((r) => r.txnId === id1 && Math.abs(r.amount - 123.45) < 0.005)) ok("get_transaction_detail(customer) contains the 123.45 expense");
+        else bad("get_transaction_detail(customer) contains the 123.45 expense", `rows: ${JSON.stringify(rows).slice(0, 300)}`);
+        if (rows.some((r) => r.txnId === id2 || Math.abs(r.amount - 67.89) < 0.005)) bad("get_transaction_detail(customer) excludes other customer's expense", "found the 67.89 expense");
+        else ok("get_transaction_detail(customer) excludes other customer's expense");
+        if (td?.totals && typeof td.totals.rowCount === "number" && td.totals.byCustomer) ok("get_transaction_detail returns totals");
+        else bad("get_transaction_detail returns totals", "missing totals.rowCount/byCustomer");
+      } catch (e) {
+        bad("get_transaction_detail(customer)", e.message);
+      }
+
+      try {
+        const td = unwrapRaw(await callTool("get_transaction_detail", { start_date: FDATE, end_date: FDATE, vendor: VEND2 }));
+        const rows = td?.rows ?? [];
+        const stray = rows.filter((r) => r.vendor !== VEND2 && r.name !== VEND2);
+        if (rows.length > 0 && stray.length === 0 && rows.some((r) => r.txnId === id2)) ok(`get_transaction_detail(vendor=${VEND2}) only has that vendor's rows (${rows.length})`);
+        else bad("get_transaction_detail(vendor)", `rows=${rows.length}, stray=${JSON.stringify(stray.slice(0, 2))}`);
+        if (rows.some((r) => r.txnId === id1)) bad("get_transaction_detail(vendor) excludes other vendor", "found first expense");
+      } catch (e) {
+        bad("get_transaction_detail(vendor)", e.message);
+      }
+    }
+
+    // Data-independent employee consistency check
+    try {
+      const RS = "2026-10-01", RE = "2026-10-31";
+      const byEmp = unwrapRaw(await callTool("get_profit_loss", { start_date: RS, end_date: RE, summarize_by: "Employees" }));
+      const cols = byEmp?.Columns?.Column ?? [];
+      const netByEmp = plGroupSummary(byEmp, "NetIncome") ?? plGroupSummary(byEmp, "Expenses");
+      let ei = -1;
+      for (let i = 1; i < cols.length; i++) {
+        const key = cols[i].MetaData?.find((m) => m.Name === "ColKey")?.Value ?? "";
+        if (/^[1-9]\d*$/.test(key) && Math.abs(plNum(netByEmp?.[i])) > 0.005) { ei = i; break; }
+      }
+      if (ei < 0) {
+        skip("employee consistency", `no employee column with nonzero totals in ${RS}..${RE}`);
+      } else {
+        const empId = cols[ei].MetaData.find((m) => m.Name === "ColKey").Value;
+        const empName = cols[ei].ColTitle;
+        const colTotal = plNum(netByEmp[ei]);
+        const filtered = unwrapRaw(await callTool("get_profit_loss", { start_date: RS, end_date: RE, employee: empId }));
+        const fNet = plGroupSummary(filtered, "NetIncome") ?? plGroupSummary(filtered, "Expenses");
+        const fTotal = plNum(fNet?.[fNet.length - 1]);
+        if (Math.abs(fTotal - colTotal) <= 0.01) ok(`P&L employee=${empName} grand total matches Employees column (${colTotal})`);
+        else bad("P&L employee filter vs Employees column", `${empName}: filtered ${fTotal} vs column ${colTotal}`);
+
+        const expSection = byEmp.Rows.Row.find((r) => r.group === "Expenses");
+        const expRow = plDataRows(expSection?.Rows?.Row).find((r) => r.ColData[0]?.id && Math.abs(plNum(r.ColData[ei])) > 0.005);
+        if (!expRow) {
+          skip("employee account detail sum", `${empName} has no expense account row in ${RS}..${RE}`);
+        } else {
+          const acctId = expRow.ColData[0].id;
+          const acctName = expRow.ColData[0].value;
+          const plFigure = plNum(expRow.ColData[ei]);
+          const td = unwrapRaw(await callTool("get_transaction_detail", {
+            start_date: RS, end_date: RE, employee: empId, account: acctId, max_rows: 5000,
+          }));
+          const sum = (td?.rows ?? []).reduce((a, r) => a + r.amount, 0);
+          if (Math.abs(sum - plFigure) <= 0.01) ok(`get_transaction_detail(employee=${empName}, account=${acctName}) sums to P&L figure (${plFigure})`);
+          else bad("get_transaction_detail employee+account sum", `${empName}/${acctName}: detail ${sum} vs P&L ${plFigure}`);
+        }
+      }
+    } catch (e) {
+      bad("employee consistency check", e.message);
+    }
+
+    // Uncovered-types summary field on query_account_transactions
+    try {
+      const raw = unwrapRaw(await callTool("query_account_transactions", {
+        account: "Checking", start_date: "2026-01-01", end_date: "2026-10-31",
+      }));
+      const n = raw?.summary?.uncoveredTypePostingsAdded;
+      if (typeof n === "number") ok(`query_account_transactions summary.uncoveredTypePostingsAdded = ${n}`);
+      else bad("query_account_transactions uncoveredTypePostingsAdded", `got: ${JSON.stringify(n)}`);
+    } catch (e) {
+      bad("query_account_transactions uncoveredTypePostingsAdded", e.message);
+    }
+  } catch (e) {
+    bad("Report filters section", e.message);
+  } finally {
+    for (const t of rfTrash) {
+      try {
+        await callTool("delete_entity", { entity_type: t.entity_type, id: t.id });
+        const c = unwrapText(await callTool("delete_entity", { entity_type: t.entity_type, id: t.id, confirm: true }));
+        if (c.includes("Deleted")) ok(`report-filter fixture ${t.entity_type} ${t.id} deleted`);
+        else bad(`report-filter fixture ${t.id} delete`, c.slice(0, 200));
+      } catch (e) {
+        bad(`report-filter fixture ${t.id} delete`, e.message);
+      }
     }
   }
 

@@ -44,6 +44,19 @@ export interface VendorCache {
   fetchedAt: number;
 }
 
+export interface CachedEmployee {
+  Id: string;
+  DisplayName: string;
+  Active?: boolean;
+}
+
+export interface EmployeeCache {
+  items: CachedEmployee[];
+  byId: Map<string, CachedEmployee>;
+  byName: Map<string, CachedEmployee>;     // lowercase key
+  fetchedAt: number;
+}
+
 export interface CachedCustomer {
   Id: string;
   DisplayName: string;

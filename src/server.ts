@@ -6,12 +6,13 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { toolDefinitions, executeTool } from "./tools/index.js";
+import { PACKAGE_VERSION } from "./utils/index.js";
 
 // Create MCP server
 export const server = new Server(
   {
     name: "quickbooks-mcp",
-    version: "1.0.0",
+    version: PACKAGE_VERSION,
   },
   {
     capabilities: {

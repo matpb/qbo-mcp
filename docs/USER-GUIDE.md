@@ -18,7 +18,11 @@ Ask Claude for any of these reports and it will pull them directly from QuickBoo
 - **"Give me the balance sheet broken down by department"**
 - **"Pull the trial balance for March"**
 
-You can specify date ranges, departments/locations, and whether you want accrual or cash basis.
+- **"Show wages by employee for customer X this fiscal year"**
+- **"Split employee Y's cost by customer"**
+- **"List every ledger line on the Wages account for class Z in June"**
+
+You can specify date ranges, departments/locations, and whether you want accrual or cash basis. The P&L also filters by customer, class, employee or vendor, and the filters combine with "broken down by" (for example one customer broken down by employee). For the individual lines behind a figure, ask for the transaction detail: every ledger line with its customer, employee and class tags, payroll paychecks included.
 
 ### Account Inquiries
 
@@ -96,7 +100,7 @@ These are limitations of the QuickBooks API or this particular integration:
 
 | Action | Why |
 |--------|-----|
-| **Payroll** | QuickBooks does not expose payroll data through its API |
+| **Payroll reports and edits** | QuickBooks Online has no payroll report or paycheck entity in its API. Paychecks are still visible in the P&L, transaction detail and account transactions, but payroll-only data (hours, pay rates, payroll summary layout) is not, and paychecks cannot be created or edited |
 | **Bank feeds / bank connections** | Cannot import bank transactions or connect bank accounts |
 | **Reconciliation** | Cannot mark transactions as reconciled |
 | **Receive payments against invoices** | No payment recording tool (invoices can be created, but payments against them cannot) |

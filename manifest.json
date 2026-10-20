@@ -2,11 +2,11 @@
   "manifest_version": "0.3",
   "name": "qbo-mcp",
   "display_name": "QuickBooks Online",
-  "version": "0.4.7",
-  "description": "Query and manage QuickBooks Online through Claude — accounts, transactions, invoices, bills, customers, vendors, reports (P&L, balance sheet, trial balance).",
-  "long_description": "Local MCP server that wraps Intuit's QuickBooks Online API. Uses an automatic browser-based OAuth flow on first use — no copy-paste of tokens. Credentials and tokens are stored only on your machine at ~/.quickbooks-mcp/credentials.json.",
+  "version": "0.4.8",
+  "description": "Query and manage QuickBooks Online through Claude: accounts, transactions, invoices, bills, customers, vendors, reports (P&L with customer, class and employee filters, balance sheet, trial balance, ledger detail).",
+  "long_description": "Local MCP server that wraps Intuit's QuickBooks Online API. Uses an automatic browser-based OAuth flow on first use, with no copy-paste of tokens. Credentials and tokens are stored only on your machine at ~/.quickbooks-mcp/credentials.json.",
   "author": {
-    "name": "Mat (matpb)",
+    "name": "matpb",
     "url": "https://github.com/matpb/qbo-mcp"
   },
   "homepage": "https://github.com/matpb/qbo-mcp",

@@ -8,7 +8,7 @@
 // including tax-line postings, sales tax payments, and any other entity types
 // the entity-walk doesn't cover (e.g. transfers, deposits-of-payments).
 //
-// Used by query_account_transactions when include_tax_lines=true.
+// Used by query_account_transactions and get_transaction_detail.
 
 import { TransactionLine } from "../types/index.js";
 
@@ -51,14 +51,17 @@ const DEBIT_NORMAL_TYPES = new Set([
 // entity slugs. urlEntityType keys must match getQboUrl's TXN_URL_MAP.
 // displayType is what we surface in the response so callers can match against
 // the entity-walk's `type` field (Purchase/Bill/etc.).
-const GL_TYPE_MAP: Record<string, { urlType: string; displayType: string }> = {
+export const GL_TYPE_MAP: Record<string, { urlType: string; displayType: string }> = {
   'Bill': { urlType: 'bill', displayType: 'Bill' },
+  'Bill Payment (Check)': { urlType: 'payment', displayType: 'BillPayment' },
   'Bill Payment (Cheque)': { urlType: 'payment', displayType: 'BillPayment' },
   'Bill Payment (Credit Card)': { urlType: 'payment', displayType: 'BillPayment' },
   'Bill Payment': { urlType: 'payment', displayType: 'BillPayment' },
   'Cheque': { urlType: 'purchase', displayType: 'Purchase' },
   'Check': { urlType: 'purchase', displayType: 'Purchase' },
   'Expense': { urlType: 'purchase', displayType: 'Purchase' },
+  'Cash Expense': { urlType: 'purchase', displayType: 'Purchase' },
+  'Cheque Expense': { urlType: 'purchase', displayType: 'Purchase' },
   'Credit Card Expense': { urlType: 'purchase', displayType: 'Purchase' },
   'Credit Card Credit': { urlType: 'purchase', displayType: 'Purchase' },
   'Journal Entry': { urlType: 'journalentry', displayType: 'JournalEntry' },
@@ -88,6 +91,90 @@ function buildUrl(urlType: string, id: string): string {
   return `https://app.qbo.intuit.com/app/${path}?txnId=${id}`;
 }
 
+export interface GLParsedRow {
+  date: string;
+  type: string;
+  txnId: string;
+  docNumber?: string;
+  name?: string;
+  customer?: string;
+  vendor?: string;
+  employee?: string;
+  class?: string;
+  department?: string;
+  account?: string;
+  split?: string;
+  memo?: string;
+  amount: number;
+}
+
+// Flat Data rows of a GeneralLedger report, cells located by column title.
+// Amounts keep the report's native sign; txnId is '' when no cell has an id.
+export function parseGLRows(report: GLReport): GLParsedRow[] {
+  const out: GLParsedRow[] = [];
+  const columns = report.Columns?.Column ?? [];
+  const colIdx = (title: string) => columns.findIndex(c => c.ColTitle === title);
+  const idx = {
+    date: colIdx('Date'),
+    type: colIdx('Transaction Type'),
+    num: colIdx('Num'),
+    name: colIdx('Name'),
+    customer: colIdx('Customer'),
+    vendor: colIdx('Vendor'),
+    employee: colIdx('Employee'),
+    klass: colIdx('Class'),
+    department: colIdx('Department'),
+    account: colIdx('Account'),
+    split: colIdx('Split'),
+    memo: colIdx('Memo/Description'),
+    amount: colIdx('Amount'),
+  };
+
+  function processRows(rowList: GLRow[]): void {
+    for (const row of rowList) {
+      if (row.Rows?.Row) processRows(row.Rows.Row);
+
+      if (row.type !== 'Data' || !row.ColData) continue;
+
+      const cd = row.ColData;
+      const firstColVal = cd[0]?.value ?? '';
+      if (firstColVal === 'Beginning Balance' || firstColVal === 'Total') continue;
+
+      const cell = (i: number): string | undefined => {
+        if (i < 0) return undefined;
+        const v = cd[i]?.value;
+        return v ? v : undefined;
+      };
+
+      // txnId can live on any cell; QBO usually puts it on Transaction Type.
+      let txnId = '';
+      for (const c of cd) {
+        if (c.id && c.id.length > 0) { txnId = c.id; break; }
+      }
+
+      out.push({
+        date: cell(idx.date) ?? '',
+        type: cell(idx.type) ?? '',
+        txnId,
+        docNumber: cell(idx.num),
+        name: cell(idx.name),
+        customer: cell(idx.customer),
+        vendor: cell(idx.vendor),
+        employee: cell(idx.employee),
+        class: cell(idx.klass),
+        department: cell(idx.department),
+        account: cell(idx.account),
+        split: cell(idx.split),
+        memo: cell(idx.memo),
+        amount: parseFloat(cell(idx.amount) ?? '') || 0,
+      });
+    }
+  }
+
+  processRows(report.Rows?.Row ?? []);
+  return out;
+}
+
 /**
  * Extract TransactionLine entries from a GeneralLedgerDetail report.
  *
@@ -109,68 +196,32 @@ export function extractGLLines(
     ? `${targetAccount.AcctNum} ${targetAccount.Name}`
     : (targetAccount.FullyQualifiedName || targetAccount.Name);
 
-  const columns = report.Columns?.Column ?? [];
-  const colIdx = (title: string) => columns.findIndex(c => c.ColTitle === title);
-  const dateIdx = colIdx('Date');
-  const typeIdx = colIdx('Transaction Type');
-  const numIdx = colIdx('Num');
-  const memoIdx = colIdx('Memo/Description');
-  const amountIdx = colIdx('Amount');
+  for (const row of parseGLRows(report)) {
+    if (!row.txnId) continue; // can't link without an id
 
-  function processRows(rowList: GLRow[]): void {
-    for (const row of rowList) {
-      if (row.Rows?.Row) processRows(row.Rows.Row);
+    const mapped = GL_TYPE_MAP[row.type];
+    const displayType = mapped?.displayType || row.type || 'Unknown';
+    const qboLink = mapped ? buildUrl(mapped.urlType, row.txnId) : '';
 
-      if (row.type !== 'Data' || !row.ColData) continue;
+    // Convert from native-balance sign to DR/CR sign.
+    const amount = isDebitNormal ? row.amount : -row.amount;
 
-      const cd = row.ColData;
-      const firstColVal = cd[0]?.value ?? '';
-
-      // Skip "Beginning Balance" and any total/summary rows that QBO mixes in.
-      if (firstColVal === 'Beginning Balance' || firstColVal === 'Total') continue;
-
-      const date = dateIdx >= 0 ? (cd[dateIdx]?.value ?? '') : '';
-      const txnTypeLabel = typeIdx >= 0 ? (cd[typeIdx]?.value ?? '') : '';
-      const docNumber = numIdx >= 0 ? (cd[numIdx]?.value ?? undefined) : undefined;
-      const memo = memoIdx >= 0 ? (cd[memoIdx]?.value ?? undefined) : undefined;
-      const rawAmount = amountIdx >= 0 && cd[amountIdx]?.value
-        ? parseFloat(cd[amountIdx].value!) || 0
-        : 0;
-
-      // txnId can live on any colData entry; QBO usually puts it on the
-      // Transaction Type column. Walk all cells looking for a non-empty id.
-      let txnId = '';
-      for (const c of cd) {
-        if (c.id && c.id.length > 0) { txnId = c.id; break; }
-      }
-      if (!txnId) continue; // can't link without an id
-
-      const mapped = GL_TYPE_MAP[txnTypeLabel];
-      const displayType = mapped?.displayType || txnTypeLabel || 'Unknown';
-      const qboLink = mapped ? buildUrl(mapped.urlType, txnId) : '';
-
-      // Convert from native-balance sign to DR/CR sign.
-      const amount = isDebitNormal ? rawAmount : -rawAmount;
-
-      lines.push({
-        date,
-        type: displayType,
-        txnId,
-        docNumber,
-        // GL doesn't expose the line id of the originating entity line; use a
-        // stable placeholder so the response shape stays consistent.
-        lineId: 'gl',
-        amount,
-        description: memo,
-        qboLink,
-        accountId: targetAccount.Id,
-        accountName,
-        // GL rows by definition match the queried account.
-        isMatchingLine: true,
-      });
-    }
+    lines.push({
+      date: row.date,
+      type: displayType,
+      txnId: row.txnId,
+      docNumber: row.docNumber,
+      // GL doesn't expose the line id of the originating entity line; use a
+      // stable placeholder so the response shape stays consistent.
+      lineId: 'gl',
+      amount,
+      description: row.memo,
+      qboLink,
+      accountId: targetAccount.Id,
+      accountName,
+      // GL rows by definition match the queried account.
+      isMatchingLine: true,
+    });
   }
-
-  processRows(report.Rows?.Row ?? []);
   return lines;
 }

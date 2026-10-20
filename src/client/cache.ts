@@ -7,6 +7,7 @@ import {
   CachedClass,
   CachedCustomer,
   CachedDepartment,
+  CachedEmployee,
   CachedProject,
   CachedTaxCode,
   CachedVendor,
@@ -14,6 +15,7 @@ import {
   AccountCache,
   ClassCache,
   DepartmentCache,
+  EmployeeCache,
   ProjectCache,
   TaxCodeCache,
   VendorCache,
@@ -27,6 +29,7 @@ const LOOKUP_CACHE_TTL_MS = 15 * 60 * 1000;
 let departmentCache: DepartmentCache | null = null;
 let accountCache: AccountCache | null = null;
 let vendorCache: VendorCache | null = null;
+let employeeCache: EmployeeCache | null = null;
 let classCache: ClassCache | null = null;
 let taxCodeCache: TaxCodeCache | null = null;
 let projectCache: ProjectCache | null = null;
@@ -41,6 +44,7 @@ export function clearLookupCache(): void {
   departmentCache = null;
   accountCache = null;
   vendorCache = null;
+  employeeCache = null;
   classCache = null;
   taxCodeCache = null;
   projectCache = null;
@@ -163,6 +167,43 @@ export async function resolveVendor(client: QuickBooks, nameOrId: string): Promi
   if (byPartial) return { value: byPartial.Id, name: byPartial.DisplayName };
 
   throw new Error(`Vendor not found: "${nameOrId}". Try using vendor display name or ID.`);
+}
+
+export async function getEmployeeCache(client: QuickBooks): Promise<EmployeeCache> {
+  if (employeeCache && (Date.now() - employeeCache.fetchedAt) < LOOKUP_CACHE_TTL_MS) {
+    return employeeCache;
+  }
+
+  const result = await promisify<unknown>((cb) => client.findEmployees({ fetchAll: true }, cb));
+  const items = extractQueryResults<CachedEmployee>(result, 'Employee');
+
+  const byId = new Map<string, CachedEmployee>();
+  const byName = new Map<string, CachedEmployee>();
+  for (const employee of items) {
+    byId.set(employee.Id, employee);
+    byName.set(employee.DisplayName.toLowerCase(), employee);
+  }
+
+  employeeCache = { items, byId, byName, fetchedAt: Date.now() };
+  return employeeCache;
+}
+
+// Resolve employee by name or ID using cache
+export async function resolveEmployee(client: QuickBooks, nameOrId: string): Promise<{ value: string; name: string }> {
+  const cache = await getEmployeeCache(client);
+
+  const byId = cache.byId.get(nameOrId);
+  if (byId) return { value: byId.Id, name: byId.DisplayName };
+
+  const byName = cache.byName.get(nameOrId.toLowerCase());
+  if (byName) return { value: byName.Id, name: byName.DisplayName };
+
+  const byPartial = cache.items.find(e =>
+    e.DisplayName.toLowerCase().includes(nameOrId.toLowerCase())
+  );
+  if (byPartial) return { value: byPartial.Id, name: byPartial.DisplayName };
+
+  throw new Error(`Employee not found: "${nameOrId}". Try using employee display name or ID.`);
 }
 
 // Resolve item by name or ID using lazy per-entry cache

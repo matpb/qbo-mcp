@@ -74,13 +74,17 @@ Just ask Claude. It'll call the right QBO tools.
 Examples:
 
 - *"Pull the P&L for Q1 2026."*
+- *"Wages by employee for customer 58 this year."* (P&L filtered by customer, summarized by employee)
+- *"List every ledger line on Wages for that customer."* (`get_transaction_detail`)
 - *"Show me customer 58's outstanding invoices."*
 - *"Create a journal entry debiting Rent $2,000 and crediting Bank $2,000."*
 
 Every write tool defaults to `draft=true` and returns a preview first — you
 confirm with `draft=false` before it touches the books.
 
-See [`docs/USER-GUIDE.md`](./docs/USER-GUIDE.md) for the full capability list.
+See [`docs/USER-GUIDE.md`](./docs/USER-GUIDE.md) for the full capability list and
+[`CHANGELOG.md`](./CHANGELOG.md) for what changed in each version. Ask Claude
+to "get company info" to see which version is installed.
 
 ---
 

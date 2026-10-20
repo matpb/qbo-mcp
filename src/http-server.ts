@@ -23,14 +23,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { setOutputMode } from "./utils/output.js";
+import { PACKAGE_VERSION } from "./utils/version.js";
 import { toolDefinitions, executeTool } from "./tools/index.js";
 import { getAuthConfig, validateToken } from "./auth/token-validator.js";
 import { getCredentialProvider } from "./credentials/index.js";
 import type { QBCredentials } from "./credentials/index.js";
 
-// Keep in sync with package.json. ESM + NodeNext JSON imports are fiddly —
-// a two-line manual bump is cheaper than the build-config churn.
-const SERVER_VERSION = "0.1.0";
+const SERVER_VERSION = PACKAGE_VERSION;
 
 setOutputMode("http");
 

@@ -2,6 +2,7 @@
 
 import QuickBooks from "node-quickbooks";
 import { promisify, getCompanyIdValue } from "../../client/index.js";
+import { PACKAGE_VERSION } from "../../utils/index.js";
 
 export async function handleGetCompanyInfo(client: QuickBooks): Promise<{ content: Array<{ type: string; text: string }> }> {
   const companyId = getCompanyIdValue();
@@ -9,6 +10,6 @@ export async function handleGetCompanyInfo(client: QuickBooks): Promise<{ conten
     client.getCompanyInfo(companyId!, cb)
   );
   return {
-    content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+    content: [{ type: "text", text: `${JSON.stringify(result, null, 2)}\n\nqbo-mcp version: ${PACKAGE_VERSION}` }],
   };
 }

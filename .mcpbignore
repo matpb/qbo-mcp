@@ -12,6 +12,18 @@
 /.claude/
 /.gitignore
 /.env.example
+/.mcp.json
+/scripts/
+
+# Local secrets and previous release artifacts
+/.env
+/.env.*
+/credentials.json
+/*.credentials.json
+/data/
+/dist-lambda/
+/*.mcpb
+/*.zip
 
 # Source maps (mcpb excludes by default, listed here for clarity)
 dist/**/*.map

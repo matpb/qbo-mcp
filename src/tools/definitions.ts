@@ -72,7 +72,7 @@ export const toolDefinitions = [
   },
   {
     name: "get_profit_loss",
-    description: "Get a Profit and Loss (Income Statement) report. Can be broken down by department/location.",
+    description: "Get a Profit and Loss (Income Statement) report. Can be broken down by department/location and filtered by customer, class, employee or vendor. Filters combine with each other and with summarize_by: for example customer + summarize_by='Employees' gives wages per employee for that customer (grant/project), and employee + summarize_by='Customers' gives one employee's cost per customer. Payroll paychecks are included in the P&L expense figures, so these views answer 'wages by employee x customer x class'. For line-level detail behind a figure use get_transaction_detail.",
     inputSchema: {
       type: "object",
       properties: {
@@ -91,6 +91,22 @@ export const toolDefinitions = [
         department: {
           type: "string",
           description: "Filter to a specific department/location ID",
+        },
+        customer: {
+          type: "string",
+          description: "Filter to a customer/sub-customer/project (name or ID). Combine with summarize_by='Employees' for wages per employee for that customer.",
+        },
+        class: {
+          type: "string",
+          description: "Filter to a class (name or ID).",
+        },
+        employee: {
+          type: "string",
+          description: "Filter to an employee (display name or ID). Combine with summarize_by='Customers' or 'Classes' to split that employee's cost.",
+        },
+        vendor: {
+          type: "string",
+          description: "Filter to a vendor (display name or ID).",
         },
         accounting_method: {
           type: "string",
@@ -150,7 +166,7 @@ export const toolDefinitions = [
   },
   {
     name: "query_account_transactions",
-    description: "Query all transactions affecting a specific account. By default walks entity bodies (JournalEntry, Purchase, Deposit, SalesReceipt, Bill, Invoice, Payment) and emits each line whose AccountRef matches the queried account. This entity-walk MISSES postings from `TxnTaxDetail.TaxLine[]` (the GL effect of a line's tax_code on a tax-payable / tax-receivable account) and from entity types it doesn't cover (e.g. Sales Tax Payment, Transfer). Set include_tax_lines=true to also pull the GeneralLedgerDetail report and merge any postings missing from the entity walk — essential when querying a tax-tracking account (GST/HST Payable, ITC Receivable, PSB rebate, etc.). Returns consolidated list with date, type, amount (debit/credit), and description.",
+    description: "Query all transactions affecting a specific account. Walks entity bodies (JournalEntry, Purchase, Deposit, SalesReceipt, Bill, Invoice, Payment) and emits each line whose AccountRef matches the queried account, then ALWAYS merges the GeneralLedgerDetail report rows for every transaction type the walk cannot read (Paycheck, Transfer, Bill Payment, Sales Tax Payment, etc.), so paychecks and similar postings are included automatically; the summary reports how many were added. The entity walk still MISSES postings from `TxnTaxDetail.TaxLine[]` (the GL effect of a line's tax_code on a tax-payable / tax-receivable account) on the types it covers: set include_tax_lines=true to also merge those missing postings — essential when querying a tax-tracking account (GST/HST Payable, ITC Receivable, PSB rebate, etc.). For per-employee / per-customer / per-class lines use get_transaction_detail. Returns consolidated list with date, type, amount (debit/credit), and description.",
     inputSchema: {
       type: "object",
       properties: {
@@ -172,11 +188,65 @@ export const toolDefinitions = [
         },
         include_tax_lines: {
           type: "boolean",
-          description: "If true, also fetch the GeneralLedgerDetail report and merge any postings not produced by the entity walk. Adds tax-line postings (from TxnTaxDetail.TaxLine[]) and entries from entity types the walk doesn't cover (Sales Tax Payment, Transfer, etc.). Required for accurate auditing of tax-tracking accounts. Adds one extra API call. Default: false."
+          description: "If true, also merge GeneralLedgerDetail postings of entity types the walk DOES cover that the walk missed, mainly tax-line postings (from TxnTaxDetail.TaxLine[]). Required for accurate auditing of tax-tracking accounts. Postings of types the walk can't read (Paycheck, Transfer, etc.) are merged regardless of this flag. Default: false."
         }
       },
       required: ["account"]
     }
+  },
+  {
+    name: "get_transaction_detail",
+    description: "Line-level ledger detail from the General Ledger report, filterable by account, customer, employee, vendor, class, department and transaction type. QuickBooks Online has no payroll report API and Paycheck is not a queryable entity, but paychecks post to the ledger, so they show up here (transaction type typically labelled 'Paycheck') with their employee/customer/class tags per line. Check the byType totals for the exact label your company uses. Filters combine (for example employee + customer + account, or transaction_type='Paycheck' + customer for wages charged to a grant). Each row has date, type, txnId, docNumber, name, customer, employee, vendor, class, department, account, split, memo and amount; empty fields are omitted. Amount is the report's native value with its native sign (as QuickBooks shows it per account), not converted to debit/credit. Totals (row count, total amount, and amount grouped by account, customer, employee, class and type) cover ALL matching rows even when rows are truncated at max_rows. Read-only. Class and department columns appear only when the company tracks them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        start_date: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (default: start of year)",
+        },
+        end_date: {
+          type: "string",
+          description: "End date YYYY-MM-DD (default: today)",
+        },
+        account: {
+          type: "string",
+          description: "Account name, number (AcctNum), or ID",
+        },
+        customer: {
+          type: "string",
+          description: "Customer/sub-customer/project name or ID",
+        },
+        employee: {
+          type: "string",
+          description: "Employee display name or ID",
+        },
+        vendor: {
+          type: "string",
+          description: "Vendor display name or ID",
+        },
+        class: {
+          type: "string",
+          description: "Class name or ID",
+        },
+        department: {
+          type: "string",
+          description: "Department/location name or ID",
+        },
+        transaction_type: {
+          type: "string",
+          description: "Case-insensitive exact match on the report's Transaction Type label, e.g. 'Paycheck', 'Journal Entry', 'Check', 'Bill', 'Expense'",
+        },
+        accounting_method: {
+          type: "string",
+          description: "Accounting method: 'Accrual' (default) or 'Cash'",
+        },
+        max_rows: {
+          type: "number",
+          description: "Maximum rows returned in the detail list (default 500). Totals always cover all matching rows.",
+        },
+      },
+      required: [],
+    },
   },
   {
     name: "account_period_summary",
