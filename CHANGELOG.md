@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.9
+
+- Updating from an earlier version keeps your settings: install the new file from Settings, Extensions, Advanced settings, Install extension, then click Update.
+- The Intuit Client ID and Secret are optional. When they're blank, the keys saved by your last QuickBooks sign-in are used.
+
 ## 0.4.8
 
 - `get_profit_loss` takes `customer`, `class`, `employee` and `vendor` filters (name or ID). They combine with `summarize_by`, so one customer broken down by employee gives wages per employee for that customer. The report echoes the matched names.

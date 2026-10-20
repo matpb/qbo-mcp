@@ -2,11 +2,11 @@
   "manifest_version": "0.3",
   "name": "qbo-mcp",
   "display_name": "QuickBooks Online",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Query and manage QuickBooks Online through Claude: accounts, transactions, invoices, bills, customers, vendors, reports (P&L with customer, class and employee filters, balance sheet, trial balance, ledger detail).",
   "long_description": "Local MCP server that wraps Intuit's QuickBooks Online API. Uses an automatic browser-based OAuth flow on first use, with no copy-paste of tokens. Credentials and tokens are stored only on your machine at ~/.quickbooks-mcp/credentials.json.",
   "author": {
-    "name": "matpb",
+    "name": "Mat (matpb)",
     "url": "https://github.com/matpb/qbo-mcp"
   },
   "homepage": "https://github.com/matpb/qbo-mcp",
@@ -15,13 +15,21 @@
     "url": "https://github.com/matpb/qbo-mcp"
   },
   "license": "MIT",
-  "keywords": ["quickbooks", "qbo", "accounting", "intuit", "finance"],
+  "keywords": [
+    "quickbooks",
+    "qbo",
+    "accounting",
+    "intuit",
+    "finance"
+  ],
   "server": {
     "type": "node",
     "entry_point": "dist/index.js",
     "mcp_config": {
       "command": "node",
-      "args": ["${__dirname}/dist/index.js"],
+      "args": [
+        "${__dirname}/dist/index.js"
+      ],
       "env": {
         "QBO_CLIENT_ID": "${user_config.client_id}",
         "QBO_CLIENT_SECRET": "${user_config.client_secret}",
@@ -35,15 +43,15 @@
     "client_id": {
       "type": "string",
       "title": "Intuit Client ID",
-      "description": "From your Intuit Developer app → Keys & credentials.",
-      "required": true
+      "description": "From your Intuit Developer app, Keys & credentials. Leave blank when updating: the keys saved by your last QuickBooks sign-in are reused.",
+      "required": false
     },
     "client_secret": {
       "type": "string",
       "title": "Intuit Client Secret",
-      "description": "From your Intuit Developer app → Keys & credentials.",
+      "description": "From your Intuit Developer app, Keys & credentials. Leave blank when updating: the keys saved by your last QuickBooks sign-in are reused.",
       "sensitive": true,
-      "required": true
+      "required": false
     },
     "sandbox": {
       "type": "boolean",
@@ -55,7 +63,11 @@
   },
   "compatibility": {
     "claude_desktop": ">=0.10.0",
-    "platforms": ["darwin", "win32", "linux"],
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
     "runtimes": {
       "node": ">=18.0.0"
     }

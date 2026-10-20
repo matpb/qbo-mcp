@@ -10,9 +10,11 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, "..");
+const VERSION = JSON.parse(readFileSync(join(REPO, "package.json"), "utf8")).version;
 
 let nextId = 1;
 const pending = new Map(); // id -> { resolve, reject }
@@ -168,8 +170,8 @@ async function main() {
   else bad("query description warns about OR/IN limits", "no AND/OR caveat found");
   try {
     const ci = unwrapText(await callTool("get_company_info", {}));
-    if (ci.includes("qbo-mcp version: 0.4.8")) ok("get_company_info reports qbo-mcp version: 0.4.8");
-    else bad("get_company_info reports qbo-mcp version", `no 'qbo-mcp version: 0.4.8' in tail: ${ci.slice(-120)}`);
+    if (ci.includes(`qbo-mcp version: ${VERSION}`)) ok(`get_company_info reports qbo-mcp version: ${VERSION}`);
+    else bad("get_company_info reports qbo-mcp version", `no 'qbo-mcp version: ${VERSION}' in tail: ${ci.slice(-120)}`);
   } catch (e) {
     bad("get_company_info reports qbo-mcp version", e.message);
   }

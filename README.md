@@ -40,13 +40,18 @@ sees your Intuit password — the app is just how Intuit knows who's asking.
 
 ### 3. Install into Claude Desktop
 
-Double-click `qbo-mcp.mcpb`. Claude Desktop opens an install prompt asking for:
+In Claude Desktop open **Settings → Extensions → Advanced settings → Install
+extension** and pick the downloaded `.mcpb` (double-clicking the file may not
+open Claude on Windows). Click **Install**, then **Configure**:
 
-- **Intuit Client ID** — from step 2.
-- **Intuit Client Secret** — from step 2.
-- **Use Intuit Sandbox** — leave off for real books; turn on for sandbox data.
+- **Intuit Client ID** and **Intuit Client Secret**: from step 2.
+- **Use Intuit Sandbox**: leave off for real books; turn on for sandbox data.
 
-Install. The QuickBooks extension is now live.
+Make sure the extension shows **Enabled**.
+
+**Updating:** install the new `.mcpb` the same way and click **Update**. Your
+settings and sign-in are kept. If the key fields are ever blank, the keys
+saved by your last QuickBooks sign-in are used.
 
 ### 4. Authorize
 

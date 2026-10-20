@@ -15,6 +15,12 @@ function getCredentialPath(): string {
   return process.env.QBO_CREDENTIAL_FILE || DEFAULT_CREDENTIAL_PATH;
 }
 
+// Blank or unexpanded "${user_config.*}" values count as unset, so the stored keys apply.
+function envValue(name: string): string | undefined {
+  const v = process.env[name];
+  return v && !v.startsWith("${") ? v : undefined;
+}
+
 /**
  * Local file-based credential provider
  * Stores credentials in ~/.quickbooks-mcp/credentials.json by default
@@ -33,8 +39,8 @@ export class LocalCredentialProvider implements CredentialProvider {
 
       // Merge with environment variables (env vars take precedence for client credentials)
       const credentials: QBCredentials = {
-        client_id: process.env.QBO_CLIENT_ID || stored.client_id,
-        client_secret: process.env.QBO_CLIENT_SECRET || stored.client_secret,
+        client_id: envValue("QBO_CLIENT_ID") || stored.client_id,
+        client_secret: envValue("QBO_CLIENT_SECRET") || stored.client_secret,
         redirect_url: stored.redirect_url || "https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl",
         access_token: stored.access_token,
         refresh_token: stored.refresh_token,
@@ -100,7 +106,7 @@ export class LocalCredentialProvider implements CredentialProvider {
    */
   async hasClientCredentials(): Promise<boolean> {
     // Check environment variables first
-    if (process.env.QBO_CLIENT_ID && process.env.QBO_CLIENT_SECRET) {
+    if (envValue("QBO_CLIENT_ID") && envValue("QBO_CLIENT_SECRET")) {
       return true;
     }
 
@@ -119,8 +125,8 @@ export class LocalCredentialProvider implements CredentialProvider {
    * Returns null if not available
    */
   async getClientCredentials(): Promise<{ clientId: string; clientSecret: string } | null> {
-    const clientId = process.env.QBO_CLIENT_ID;
-    const clientSecret = process.env.QBO_CLIENT_SECRET;
+    const clientId = envValue("QBO_CLIENT_ID");
+    const clientSecret = envValue("QBO_CLIENT_SECRET");
 
     if (clientId && clientSecret) {
       return { clientId, clientSecret };
