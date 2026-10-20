@@ -21,9 +21,9 @@ export function extractReportSummary(report: QBReport, reportType: string): stri
   }
 
   // Column headers (departments if summarized)
-  const colTitles = columns.map(c => c.ColTitle).filter(Boolean);
-  if (colTitles.length > 2) {
-    lines.push(`Columns: ${colTitles.slice(1).join(", ")}`);
+  const colTitles = columns.slice(1).map(c => c.ColTitle).filter(Boolean);
+  if (colTitles.length > 1) {
+    lines.push(`Columns: ${colTitles.join(", ")}`);
   }
 
   // Trial Balance: grand totals live in a top-level row with group="GrandTotal"

@@ -196,7 +196,7 @@ export const toolDefinitions = [
   },
   {
     name: "get_transaction_detail",
-    description: "Line-level ledger detail from the General Ledger report, filterable by account, customer, employee, vendor, class, department and transaction type. QuickBooks Online has no payroll report API and Paycheck is not a queryable entity, but paychecks post to the ledger, so they show up here (transaction type typically labelled 'Paycheck') with their employee/customer/class tags per line. Check the byType totals for the exact label your company uses. Filters combine (for example employee + customer + account, or transaction_type='Paycheck' + customer for wages charged to a grant). Each row has date, type, txnId, docNumber, name, customer, employee, vendor, class, department, account, split, memo and amount; empty fields are omitted. Amount is the report's native value with its native sign (as QuickBooks shows it per account), not converted to debit/credit. Totals (row count, total amount, and amount grouped by account, customer, employee, class and type) cover ALL matching rows even when rows are truncated at max_rows. Read-only. Class and department columns appear only when the company tracks them.",
+    description: "Line-level ledger detail from the General Ledger report, filterable by account, customer, employee, vendor, class, department and transaction type. QuickBooks Online has no payroll report API and Paycheck is not a queryable entity, but paychecks post to the ledger, so they show up here (transaction type labelled 'Paycheck' in US books and 'Paycheque' in Canadian books) with their employee/customer/class tags per line. Check the byType totals for the exact label your company uses. Filters combine (for example employee + customer + account, or transaction_type='Paycheck' + customer for wages charged to a grant). Each row has date, type, txnId, docNumber, name, customer, employee, vendor, class, department, account, split, memo and amount; empty fields are omitted. Amount is the report's native value with its native sign (as QuickBooks shows it per account), not converted to debit/credit. Totals (row count, total amount, and amount grouped by account, customer, employee, class and type) cover ALL matching rows even when rows are truncated at max_rows. Read-only. Class and department columns appear only when the company tracks them.",
     inputSchema: {
       type: "object",
       properties: {
@@ -234,7 +234,7 @@ export const toolDefinitions = [
         },
         transaction_type: {
           type: "string",
-          description: "Case-insensitive exact match on the report's Transaction Type label, e.g. 'Paycheck', 'Journal Entry', 'Check', 'Bill', 'Expense'",
+          description: "Case-insensitive exact match on the report's Transaction Type label, e.g. 'Paycheck', 'Journal Entry', 'Check', 'Bill', 'Expense'. The label is 'Paycheck' in US books and 'Paycheque' in Canadian books; either spelling works, and 'Check' and 'Cheque' are interchangeable. When nothing matches, the response lists the types present.",
         },
         accounting_method: {
           type: "string",

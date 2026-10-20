@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.10
+
+- `get_transaction_detail` shows amounts in multicurrency companies, and reports an error naming the columns received instead of zeros when no amount column comes back.
+- Paychecks are found whether your books say Paycheck or Paycheque (and Check or Cheque). When a transaction type matches nothing, the response lists the types present.
+- Profit and loss summaries by customer, class or employee no longer drop the first column from the Columns line.
+
 ## 0.4.9
 
 - Updating from an earlier version keeps your settings: install the new file from Settings, Extensions, Advanced settings, Install extension, then click Update.

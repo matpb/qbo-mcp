@@ -11,10 +11,10 @@ import {
   resolveDepartmentId,
 } from "../../client/index.js";
 import { toCents, toDollars, outputReport, applyReportsMigrationFlag } from "../../utils/index.js";
-import { parseGLRows, GLReport, GLParsedRow } from "../../query/index.js";
+import { parseGLRows, findGLAmountColumn, describeGLColumns, normalizeTxnTypeLabel, GLReport, GLParsedRow } from "../../query/index.js";
 
 const GL_COLUMNS =
-  "tx_date,txn_type,doc_num,name,emp_name,vend_name,cust_name,klass_name,dept_name,account_name,split_acc,memo,subt_nat_amount";
+  "tx_date,txn_type,doc_num,name,emp_name,vend_name,cust_name,klass_name,dept_name,account_name,split_acc,memo,subt_nat_home_amount,subt_nat_amount";
 
 const DEFAULT_MAX_ROWS = 500;
 
@@ -122,10 +122,19 @@ export async function handleGetTransactionDetail(
   ) as GLReport;
 
   let rows = parseGLRows(report).filter(r => r.type);
+  if (rows.length > 0 && findGLAmountColumn(report) < 0) {
+    throw new Error(`General Ledger report has rows but no amount column. Columns received: ${describeGLColumns(report)}`);
+  }
+  let typeNote: string | undefined;
   if (transaction_type) {
-    const want = transaction_type.toLowerCase();
-    rows = rows.filter(r => r.type.toLowerCase() === want);
+    const before = rows;
+    const want = normalizeTxnTypeLabel(transaction_type);
+    rows = rows.filter(r => normalizeTxnTypeLabel(r.type) === want);
     filters.transaction_type = transaction_type;
+    if (rows.length === 0 && before.length > 0) {
+      const present = [...new Set(before.map(r => r.type))].sort();
+      typeNote = `No rows of type '${transaction_type}'. Types present: ${present.join(", ")}`;
+    }
   }
   rows.sort((a, b) => a.date.localeCompare(b.date));
 
@@ -148,6 +157,7 @@ export async function handleGetTransactionDetail(
     filters,
     amountSign: "native sign as reported by QuickBooks General Ledger (per-account balance convention)",
     totals,
+    ...(typeNote ? { note: typeNote } : {}),
     ...(truncated ? { truncatedAt: maxRows, totalRows: rows.length } : {}),
     rows: outRows,
   };
@@ -162,6 +172,7 @@ export async function handleGetTransactionDetail(
   if (filterText) summaryLines.push(`Filters: ${filterText}`);
   summaryLines.push("");
   summaryLines.push(`Rows: ${totals.rowCount} | Total amount: ${fmt(totals.total)}`);
+  if (typeNote) summaryLines.push(typeNote);
   if (truncated) {
     summaryLines.push(`(Showing first ${maxRows} of ${rows.length} rows; totals cover all ${rows.length} matching rows)`);
   }

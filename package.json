@@ -1,6 +1,6 @@
 {
   "name": "qbo-mcp",
-  "version": "0.4.9",
+  "version": "0.4.10",
   "description": "QuickBooks Online MCP server for Claude Desktop — local-first, auto-OAuth, packaged as .mcpb (forked from laf-rge/quickbooks-mcp)",
   "license": "MIT",
   "private": true,
@@ -11,6 +11,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "test:unit": "node scripts/unit-gl.mjs",
     "start": "node dist/index.js",
     "start:http": "node dist/http-server.js",
     "dev": "tsc --watch",

@@ -59,6 +59,8 @@ export const GL_TYPE_MAP: Record<string, { urlType: string; displayType: string 
   'Bill Payment': { urlType: 'payment', displayType: 'BillPayment' },
   'Cheque': { urlType: 'purchase', displayType: 'Purchase' },
   'Check': { urlType: 'purchase', displayType: 'Purchase' },
+  'Paycheque': { urlType: 'paycheck', displayType: 'Paycheck' },
+  'Paycheck': { urlType: 'paycheck', displayType: 'Paycheck' },
   'Expense': { urlType: 'purchase', displayType: 'Purchase' },
   'Cash Expense': { urlType: 'purchase', displayType: 'Purchase' },
   'Cheque Expense': { urlType: 'purchase', displayType: 'Purchase' },
@@ -86,6 +88,7 @@ function buildUrl(urlType: string, id: string): string {
     bill: 'bill',
     invoice: 'invoice',
     payment: 'payment',
+    paycheck: 'paycheck',
   };
   const path = PATH[urlType] || urlType;
   return `https://app.qbo.intuit.com/app/${path}?txnId=${id}`;
@@ -108,6 +111,35 @@ export interface GLParsedRow {
   amount: number;
 }
 
+// Lowercased label with cheque/check spellings unified, for comparing type labels.
+export function normalizeTxnTypeLabel(label: string): string {
+  return label.toLowerCase().replace(/cheque/g, 'check').trim();
+}
+
+// Amount column preference: home-currency key, single-currency key, then the 'Amount' title.
+const AMOUNT_KEYS = ['subt_nat_home_amount', 'subt_nat_amount'];
+
+// Index of the amount column (-1 when absent). Matches MetaData Value, whatever the Name.
+export function findGLAmountColumn(report: GLReport): number {
+  const columns = report.Columns?.Column ?? [];
+  for (const key of AMOUNT_KEYS) {
+    const i = columns.findIndex(c => c.MetaData?.some(m => m.Value === key));
+    if (i >= 0) return i;
+  }
+  return columns.findIndex(c => c.ColTitle === 'Amount');
+}
+
+// Human-readable "Title [key]" list of the report's columns, for error messages.
+export function describeGLColumns(report: GLReport): string {
+  const columns = report.Columns?.Column ?? [];
+  return columns
+    .map(c => {
+      const keys = (c.MetaData ?? []).map(m => m.Value).filter(Boolean).join('/');
+      return `${c.ColTitle || '(untitled)'}${keys ? ` [${keys}]` : ''}`;
+    })
+    .join(', ');
+}
+
 // Flat Data rows of a GeneralLedger report, cells located by column title.
 // Amounts keep the report's native sign; txnId is '' when no cell has an id.
 export function parseGLRows(report: GLReport): GLParsedRow[] {
@@ -127,7 +159,7 @@ export function parseGLRows(report: GLReport): GLParsedRow[] {
     account: colIdx('Account'),
     split: colIdx('Split'),
     memo: colIdx('Memo/Description'),
-    amount: colIdx('Amount'),
+    amount: findGLAmountColumn(report),
   };
 
   function processRows(rowList: GLRow[]): void {
