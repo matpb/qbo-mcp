@@ -59,8 +59,8 @@ export const GL_TYPE_MAP: Record<string, { urlType: string; displayType: string 
   'Bill Payment': { urlType: 'payment', displayType: 'BillPayment' },
   'Cheque': { urlType: 'purchase', displayType: 'Purchase' },
   'Check': { urlType: 'purchase', displayType: 'Purchase' },
-  'Paycheque': { urlType: 'paycheck', displayType: 'Paycheck' },
-  'Paycheck': { urlType: 'paycheck', displayType: 'Paycheck' },
+  'Paycheque': { urlType: '', displayType: 'Paycheck' },
+  'Paycheck': { urlType: '', displayType: 'Paycheck' },
   'Expense': { urlType: 'purchase', displayType: 'Purchase' },
   'Cash Expense': { urlType: 'purchase', displayType: 'Purchase' },
   'Cheque Expense': { urlType: 'purchase', displayType: 'Purchase' },
@@ -88,7 +88,6 @@ function buildUrl(urlType: string, id: string): string {
     bill: 'bill',
     invoice: 'invoice',
     payment: 'payment',
-    paycheck: 'paycheck',
   };
   const path = PATH[urlType] || urlType;
   return `https://app.qbo.intuit.com/app/${path}?txnId=${id}`;
@@ -260,7 +259,8 @@ export function extractGLLines(
 
     const mapped = GL_TYPE_MAP[row.type];
     const displayType = mapped?.displayType || row.type || 'Unknown';
-    const qboLink = mapped ? buildUrl(mapped.urlType, row.txnId) : '';
+    // Paychecks have no verified deep link, so their urlType is empty.
+    const qboLink = mapped?.urlType ? buildUrl(mapped.urlType, row.txnId) : '';
 
     // Convert from native-balance sign to DR/CR sign.
     const amount = isDebitNormal ? row.amount : -row.amount;

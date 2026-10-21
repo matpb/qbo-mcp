@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.12
+
+- Paycheck rows no longer carry a QuickBooks link, since no direct QuickBooks page for a paycheck could be confirmed.
+
 ## 0.4.11
 
 - `get_transaction_detail` fills in amounts from a second ledger call when a company's books don't return the amount column for the detailed view.
